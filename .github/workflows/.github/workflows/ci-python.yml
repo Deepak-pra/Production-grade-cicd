@@ -7,16 +7,20 @@ name: Python CI
 on:
   push:
     branches:
+      - dev
+      - stage
       - main
-      - develop
     paths:
       - "apps/python/**"
-      - "!apps/python/**.md"   # ignore markdown-only changes
+      - ".github/workflows/ci-python.yml"
   pull_request:
     branches:
+      - dev
+      - stage
       - main
     paths:
       - "apps/python/**"
+      - ".github/workflows/ci-python.yml"
 
 # ── Jobs ──────────────────────────────────────────────
 jobs:
