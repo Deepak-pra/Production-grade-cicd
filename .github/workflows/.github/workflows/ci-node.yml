@@ -1,8 +1,5 @@
 name: Node CI
 
-# ── Triggers ──────────────────────────────────────────
-# Fires ONLY when files inside apps/node/ change.
-# Change Python files and this workflow stays silent.
 on:
   push:
     branches:
@@ -81,7 +78,6 @@ jobs:
           echo "Actor  : ${{ github.actor }}"
 
   # ── Job 3: Build check ───────────────────────────────
-  # Only runs on main branch push.
   build-check:
     name: Build Check
     runs-on: ubuntu-latest
