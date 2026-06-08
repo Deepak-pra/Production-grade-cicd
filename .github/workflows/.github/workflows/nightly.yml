@@ -1,0 +1,41 @@
+name: Nightly Scan (Schedule Demo)
+
+# ── schedule demo ─────────────────────────────────────
+# Runs automatically at 2:00 AM UTC every Monday.
+# Also has workflow_dispatch so you can run it manually
+# during the demo without waiting for Monday.
+on:
+  schedule:
+    - cron: "0 2 * * 1"   # 2:00 AM UTC every Monday
+
+  workflow_dispatch:       # manual trigger for demo purposes
+
+jobs:
+  nightly-checks:
+    name: Nightly Dependency Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit Python dependencies
+        working-directory: apps/python
+        run: pip-audit -r requirements.txt || echo "Audit complete — review any findings above"
+        continue-on-error: true    # demo of continue-on-error
+
+      - name: Show schedule info
+        run: |
+          echo "=== Scheduled run info ==="
+          echo "Event       : ${{ github.event_name }}"
+          echo "Run number  : ${{ github.run_number }}"
+          echo "Triggered at: $(date -u)"

@@ -1,0 +1,39 @@
+name: CD (triggered by Python CI)
+
+# ── workflow_run demo ──────────────────────────────────
+# This workflow fires automatically when Python CI
+# completes successfully on main.
+# Demonstrates: CI and CD as separate files, connected
+# by workflow_run — no coupling, no copy-paste.
+on:
+  workflow_run:
+    workflows:
+      - "Python CI"        # must match the name: field exactly
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Only run if the CI workflow succeeded — not if it failed
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Show trigger info
+        run: |
+          echo "=== workflow_run trigger ==="
+          echo "Triggered by  : ${{ github.event.workflow_run.name }}"
+          echo "CI conclusion : ${{ github.event.workflow_run.conclusion }}"
+          echo "CI branch     : ${{ github.event.workflow_run.head_branch }}"
+          echo "CI commit     : ${{ github.event.workflow_run.head_sha }}"
+
+      - name: Simulate staging deploy
+        run: |
+          echo "Deploying to staging..."
+          echo "Version: ${{ github.event.workflow_run.head_sha }}"
+          echo "Deploy complete."
