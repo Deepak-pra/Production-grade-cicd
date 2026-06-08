@@ -38,7 +38,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/node
-        run: npm ci
+        run: npm install
 
       - name: Run eslint
         working-directory: apps/node
@@ -62,7 +62,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/node
-        run: npm ci
+        run: npm install
 
       - name: Run jest
         working-directory: apps/node
