@@ -1,11 +1,10 @@
 name: CD (Build)
 
-# ── Fires when either Python CI or Node CI completes on dev/stage/main ──
 on:
   workflow_run:
     workflows:
       - "Python CI"
-      - "Node CI"
+      - "Node - CI"
     branches:
       - dev
       - stage
@@ -15,7 +14,6 @@ on:
 
 jobs:
 
-  # ── Runs only when Python CI triggered this CD ──
   build-python:
     name: Build Python App
     runs-on: ubuntu-latest
@@ -54,7 +52,6 @@ jobs:
           python -c "from calculator import add, subtract, multiply, divide, is_even; print('Build OK — all imports verified')"
           echo "Build complete for commit ${{ github.event.workflow_run.head_sha }}"
 
-  # ── Runs only when Node CI triggered this CD ──
   build-node:
     name: Build Node App
     runs-on: ubuntu-latest
@@ -62,7 +59,7 @@ jobs:
 
     if: |
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.name == 'Node CI'
+      github.event.workflow_run.name == 'Node - CI'
 
     steps:
       - name: Checkout code
