@@ -40,10 +40,8 @@ jobs:
       - name: Build Python app
         working-directory: apps/python
         run: |
-          python -m zipapp . \
-            --python "/usr/bin/env python3" \
-            --output "shipfast-api.pyz"
-          ls -lh shipfast-api.pyz
+          zip -r shipfast-api-python.zip . -x "tests/*" -x "*.pyc" -x "__pycache__/*"
+          ls -lh shipfast-api-python.zip
 
 
   build-node:
