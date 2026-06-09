@@ -9,27 +9,18 @@ on:
     paths:
       - "apps/node/**"
       - ".github/workflows/node-ci.yml"
-  pull_request:
-    branches:
-      - dev
-      - stage
-      - main
-    paths:
-      - "apps/node/**"
-      - ".github/workflows/node-ci.yml"
 
 jobs:
 
   lint:
     name: Lint (eslint)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
 
     steps:
-      - name: Code checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -38,29 +29,28 @@ jobs:
         working-directory: apps/node
         run: npm install
 
-      - name: Node Linting
+      - name: Run eslint
         working-directory: apps/node
         run: npm run lint
 
   test:
     name: Test (jest)
     runs-on: ubuntu-latest
-    needs: lint 
-    timeout-minutes: 10
+    needs: lint
 
     steps:
-      - name: Code checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Dependency Installation
+      - name: Install dependencies
         working-directory: apps/node
         run: npm install
 
-      - name: NPM test
+      - name: Run jest
         working-directory: apps/node
         run: npm test
