@@ -45,7 +45,7 @@ jobs:
   test:
     name: Test (jest)
     runs-on: ubuntu-latest
-    needs: lint        # ← added so workflow only succeeds when lint passes first
+    needs: lint 
     timeout-minutes: 10
 
     steps:
