@@ -40,10 +40,10 @@ jobs:
       - name: Build Python app
         working-directory: apps/python
         run: |
-          python -m zipapp . \
-            --python "/usr/bin/env python3" \
-            --output "shipfast-api.pyz"
-          ls -lh shipfast-api.pyz
+          mkdir -p dist
+          cp calculator.py requirements.txt dist/
+          echo "Build: ${{ github.event.workflow_run.head_sha }}" > dist/build-info.txt
+          ls -lh dist/
 
 
   build-node:
@@ -74,3 +74,4 @@ jobs:
         run: |
           npm pack
           ls -lh *.tgz
+
