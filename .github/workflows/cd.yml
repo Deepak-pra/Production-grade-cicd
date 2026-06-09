@@ -1,0 +1,94 @@
+name: CD (Build)
+
+# ── Fires when either Python CI or Node CI completes on dev/stage/main ──
+on:
+  workflow_run:
+    workflows:
+      - "Python CI"
+      - "Node CI"
+    branches:
+      - dev
+      - stage
+      - main
+    types:
+      - completed
+
+jobs:
+
+  # ── Runs only when Python CI triggered this CD ──
+  build-python:
+    name: Build Python App
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.name == 'Python CI'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Show triggering info
+        run: |
+          echo "=== Triggered by ==="
+          echo "Workflow : ${{ github.event.workflow_run.name }}"
+          echo "Branch   : ${{ github.event.workflow_run.head_branch }}"
+          echo "Commit   : ${{ github.event.workflow_run.head_sha }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: pip install -r requirements.txt
+
+      - name: Build Python app
+        working-directory: apps/python
+        run: |
+          echo "=== Python Build ==="
+          python -c "from calculator import add, subtract, multiply, divide, is_even; print('Build OK — all imports verified')"
+          echo "Build complete for commit ${{ github.event.workflow_run.head_sha }}"
+
+  # ── Runs only when Node CI triggered this CD ──
+  build-node:
+    name: Build Node App
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.name == 'Node CI'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Show triggering info
+        run: |
+          echo "=== Triggered by ==="
+          echo "Workflow : ${{ github.event.workflow_run.name }}"
+          echo "Branch   : ${{ github.event.workflow_run.head_branch }}"
+          echo "Commit   : ${{ github.event.workflow_run.head_sha }}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm install
+
+      - name: Build Node app
+        working-directory: apps/node
+        run: |
+          echo "=== Node Build ==="
+          node -e "const u = require('./src/utils'); console.log('Build OK — exports verified:', Object.keys(u).join(', '))"
+          echo "Build complete for commit ${{ github.event.workflow_run.head_sha }}"
