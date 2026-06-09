@@ -50,5 +50,5 @@ jobs:
               run: pytest test/ -v
 
             - name: Print Message
-              if: failure()
+              if: success()
               run: echo "Successfully Printed"  
