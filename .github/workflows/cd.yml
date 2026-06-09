@@ -1,4 +1,4 @@
-name: CD (Build Demo)
+name: CD (Build)
 
 on:
   workflow_run:
@@ -40,8 +40,10 @@ jobs:
       - name: Build Python app
         working-directory: apps/python
         run: |
-          zip -r shipfast-api-python.zip . -x "tests/*" -x "*.pyc" -x "__pycache__/*"
-          ls -lh shipfast-api-python.zip
+          mkdir -p dist
+          cp calculator.py requirements.txt dist/
+          echo "Build: ${{ github.event.workflow_run.head_sha }}" > dist/build-info.txt
+          ls -lh dist/
 
 
   build-node:
@@ -72,3 +74,4 @@ jobs:
         run: |
           npm pack
           ls -lh *.tgz
+
