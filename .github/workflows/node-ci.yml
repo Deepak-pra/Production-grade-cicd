@@ -1,0 +1,49 @@
+name: Node - CI
+
+on:
+    push:
+        branches: dev
+        paths:
+          - "apps/node/**"
+          - ".github/workflows/node-ci.yml"
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Code checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                node-version: "20"
+
+            - name: Install dependencies
+              working-directory: apps/node  
+              run: npm install
+
+            - name: Node Linting
+              working-directory: apps/node
+              run: npm run lint
+
+    test:
+      runs-on: ubuntu-latest
+      
+      steps:
+        - name: Code checkout
+          uses: actions/checkout@v4
+
+        - name: Setup Node.js
+          uses: actions/setup-node@v4
+          with:
+            node-version: "20"  
+
+        - name: Dependency Installation
+          working-directory: apps/node
+          run: npm install
+          
+        - name: NPM test
+          working-directory: apps/node
+          run: npm test  
