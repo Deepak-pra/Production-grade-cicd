@@ -47,5 +47,3 @@ jobs:
         - name: NPM test
           working-directory: apps/node
           run: npm test  
-
-          # Node testing
