@@ -1,55 +1,131 @@
 name: Python CI
 
 on:
-    push:
-        branches: dev
-        paths:
-            - "apps/python/**"
-            - ".github/workflows/python-ci.yml"
+  push:
+    branches:
+      - dev
+      - stage
+      - main
+    paths:
+      - "apps/python/**"
+      - ".github/workflows/ci-python.yml"
+  pull_request:
+    branches:
+      - dev
+      - stage
+      - main
+    paths:
+      - "apps/python/**"
+      - ".github/workflows/ci-python.yml"
+
+env:
+  WORKFLOW_VAR: "set-at-workflow-level"
 
 jobs:
-    lint:
-        runs-on: ubuntu-latest
-        
-        steps:
-            - name: Code checkout
-              uses: actions/checkout@v4
 
-            - name: Python Setup
-              uses: actions/setup-python@v5
-              with:
-                python-version: "3.11"
-                
-            - name: flake8 Installation
-              run: pip install flake8==7.1.0
-              
-            - name: Run flake8
-              working-directory: apps/python
-              run: flake8 . --config .flake 8
-              continue-on-error: true
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
 
-    pytest:
-        runs-on: ubuntu-latest
-        needs: lint
-        if: github.ref == 'refs/heads/main'
-        
-        steps:
-            - name: Code checkout
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Python Setup
-              uses: actions/setup-python@v5
-              with:
-                python-version: "3.11"    
-                
-            - name: Dependency Installation
-              working-directory: apps/python
-              run: pip install -r requirements.txt
-              
-            - name: Run Pytest
-              working-directory: apps/python
-              run: pytest test/ -v
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-            - name: Print Message
-              if: success()
-              run: echo "Successfully Printed"  
+      - name: Install flake8
+        run: pip install flake8==7.1.0
+
+      - name: Run flake8
+        working-directory: apps/python
+        run: flake8 . --config .flake8    # fixed: removed the space
+        continue-on-error: true
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+
+    env:
+      JOB_VAR: "set-at-job-level"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        working-directory: apps/python
+        run: pytest tests/ -v             # fixed: tests/ not test/
+
+      - name: Env var scope demo
+        env:
+          STEP_VAR: "set-at-step-level"
+        run: |
+          echo "=== Env Var Scope Demo ==="
+          echo "Workflow : $WORKFLOW_VAR"
+          echo "Job      : $JOB_VAR"
+          echo "Step     : $STEP_VAR"
+
+      - name: Step var is gone here
+        run: |
+          echo "Workflow : $WORKFLOW_VAR"
+          echo "Job      : $JOB_VAR"
+          echo "Step     : $STEP_VAR"
+
+      - name: Show context info
+        if: always()
+        run: |
+          echo "=== github context ==="
+          echo "Branch     : ${{ github.ref }}"
+          echo "Event      : ${{ github.event_name }}"
+          echo "Commit     : ${{ github.sha }}"
+          echo "Actor      : ${{ github.actor }}"
+          echo "Repo       : ${{ github.repository }}"
+          echo "Run ID     : ${{ github.run_id }}"
+          echo "Run number : ${{ github.run_number }}"
+          echo "Workflow   : ${{ github.workflow }}"
+
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    timeout-minutes: 5
+
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: pip install -r requirements.txt
+
+      - name: Verify import works
+        working-directory: apps/python
+        run: python -c "from calculator import add, subtract, multiply, divide, is_even; print('All imports OK')"
+
+      - name: Show build info
+        run: |
+          echo "Build passed on dev"
+          echo "Commit SHA : ${{ github.sha }}"
+          echo "Run number : ${{ github.run_number }}"
