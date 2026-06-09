@@ -1,0 +1,48 @@
+name: Python CI
+
+on:
+    push:
+        branches: dev
+        paths:
+            - "apps/python/**"
+            - ".github/workflows/python-ci.yml"
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        
+        steps:
+            - name: Code checkout
+              uses: actions/checkout@v4
+
+            - name: Python Setup
+              uses: actions/setup-python@v5
+              with:
+                python-version: "3.11"
+                
+            - name: flake8 Installation
+              run: pip install flake8==7.1.0
+              
+            - name: Run flake8
+              working-directory: apps/python
+              run: flake8 . --config .flake 8  
+
+    pytest:
+        runs-on: ubuntu-latest
+        
+        steps:
+            - name: Code checkout
+              uses: actions/checkout@v4
+
+            - name: Python Setup
+              uses: actions/setup-python@v5
+              with:
+                python-version: "3.11"    
+                
+            - name: Dependency Installation
+              working-directory: apps/python
+              run: pip install -r requirements.txt
+              
+            - name: Run Pytest
+              working-directory: apps/python
+              run: pytest test/ -v 
