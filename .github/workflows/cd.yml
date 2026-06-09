@@ -5,7 +5,7 @@ on:
   workflow_run:
     workflows:
       - "Python CI"
-      - "Node CI"
+      - "Node - CI"
     branches:
       - dev
       - stage
