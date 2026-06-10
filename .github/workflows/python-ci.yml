@@ -122,4 +122,3 @@ jobs:
           name: shipfast-api-python-${{ github.sha }}
           path: apps/python/dist/
           retention-days: 7
-          #testing
