@@ -1,14 +1,6 @@
 name: Node - CI
 
 on:
-  push:
-    branches:
-      - dev
-      - stage
-      - main
-    paths:
-      - "apps/node/**"
-      - ".github/workflows/node-ci.yml"
   pull_request:
     branches:
       - dev
