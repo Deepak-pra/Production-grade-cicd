@@ -1,15 +1,15 @@
 name: CD Build
 
 on:
-  workflow_run:
-    workflows:
-      - test
-    branches:
-      - dev
-      - stage
-      - main
-    types:
-      - completed
+  workflow_dispatch:
+ #   workflows:
+   #   - test
+   # branches:
+   #   - dev
+   #   - stage
+   #   - main
+   # types:
+   #   - completed
 
 jobs:
 
