@@ -4,7 +4,7 @@
  * Used for integration testing demos.
  */
 
-const { add, subtract, multiply, divide, isEven } = require("./utils");
+const { add, subtract, multiply, divide } = require("./utils");
 
 /**
  * Apply a percentage discount to a price.
