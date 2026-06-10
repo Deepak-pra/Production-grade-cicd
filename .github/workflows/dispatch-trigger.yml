@@ -1,0 +1,42 @@
+name: Dispatch Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch to dispatch"
+        type: choice
+        options:
+          - dev
+          - stage
+          - main
+        required: true
+        default: dev
+
+jobs:
+  trigger-cd:
+    name: Trigger gha-training-cd
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show dispatch info
+        run: |
+          echo "=== Sending dispatch ==="
+          echo "Target branch : ${{ inputs.target_branch }}"
+          echo "Triggered by  : ${{ github.actor }}"
+          echo "Repo SHA      : ${{ github.sha }}"
+
+      - name: Send repository_dispatch to gha-training-cd
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.DISPATCH_PAT }}" \
+            https://api.github.com/repos/Deepak-pra/gha-training-cd/dispatches \
+            -d '{
+              "event_type": "ci-success",
+              "client_payload": {
+                "branch": "${{ inputs.target_branch }}",
+                "sha": "${{ github.sha }}",
+                "triggered_by": "${{ github.actor }}"
+              }
+            }'
