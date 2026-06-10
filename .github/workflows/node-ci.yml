@@ -130,7 +130,7 @@ jobs:
         run: npx jest --coverage
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v6
         with:
           projectBaseDir: apps/node
         env:
@@ -171,3 +171,4 @@ jobs:
           name: shipfast-api-node-${{ github.sha }}
           path: apps/node/dist/
           retention-days: 7
+          #testing
