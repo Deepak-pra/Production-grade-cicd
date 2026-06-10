@@ -29,4 +29,4 @@ def calculate_average(items):
 
 def is_bulk_order(quantity, threshold=10):
     """Return True if quantity qualifies as a bulk order."""
-    return not is_even(quantity) if quantity < threshold else is_even(quantity) or quantity >= threshold
+    return quantity >= threshold
