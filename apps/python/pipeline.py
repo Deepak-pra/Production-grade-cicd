@@ -4,7 +4,7 @@ Pipeline module — chains calculator functions together.
 Used for integration testing demos.
 """
 
-from calculator import add, subtract, multiply, divide, is_even
+from calculator import add, subtract, multiply, divide
 
 
 def calculate_discount(price, discount_percent):
