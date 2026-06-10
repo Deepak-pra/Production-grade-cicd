@@ -1,40 +1,88 @@
 name: Manual Run
-on:
-    workflow_dispatch:
-        inputs:
-            target_branch:
-                description: "Target Branch"
-                type: choice
-                options:
-                    - dev
-                    - stage
-                    - main
-                required: true
-                default: dev
-            
-            run_tests:
-                description: "Run tests? (true/false)"
-                type: boolean
-                default: true
-                
-jobs:
-    manual_deploy:
-        name: Manual Deployment Pipeline
-        runs-on: ubuntu-latest
-        timeout-minutes: 5
-        
-        steps:
-            - name: Show the inputs
-              run: |
-                echo "Workflow Dispatch Inputs"
-                echo "Target Branch: ${{ inputs.target_branch }}"
-                echo "Run tests: ${{ inputs.run_tests }}"
 
-            - name: Tests Selected
-              if: inputs.run_tests == true
-              run: echo "run_tests is true - test will run"
-              
-            - name: Tests Ignored
-              if: inputs.run_tests == false
-              run: echo "run_tests is false - tested will be ignored"
-  
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Target Branch"
+        type: choice
+        options:
+          - dev
+          - stage
+          - main
+        required: true
+        default: dev
+
+      app_type:
+        description: "App type (python / node)"
+        type: string
+        required: true
+
+jobs:
+  manual-run:
+    name: Manual Deployment Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Show inputs
+        run: |
+          echo "=== Workflow Dispatch Inputs ==="
+          echo "Target Branch : ${{ inputs.target_branch }}"
+          echo "App Type      : ${{ inputs.app_type }}"
+
+      # ── Python steps ─────────────────────────────────
+      - name: Set up Python
+        if: inputs.app_type == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        if: inputs.app_type == 'python'
+        working-directory: apps/python
+        run: pip install -r requirements.txt
+
+      - name: Run flake8
+        if: inputs.app_type == 'python'
+        working-directory: apps/python
+        run: flake8 . --config .flake8
+        continue-on-error: true
+
+      - name: Run pytest
+        if: inputs.app_type == 'python'
+        working-directory: apps/python
+        run: pytest tests/ -v
+
+      # ── Node steps ───────────────────────────────────
+      - name: Set up Node.js
+        if: inputs.app_type == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Node dependencies
+        if: inputs.app_type == 'node'
+        working-directory: apps/node
+        run: npm install
+
+      - name: Run eslint
+        if: inputs.app_type == 'node'
+        working-directory: apps/node
+        run: npm run lint
+
+      - name: Run jest
+        if: inputs.app_type == 'node'
+        working-directory: apps/node
+        run: npm test
+
+      # ── Invalid input guard ──────────────────────────
+      - name: Invalid app type
+        if: inputs.app_type != 'python' && inputs.app_type != 'node'
+        run: |
+          echo "Invalid app_type: '${{ inputs.app_type }}'"
+          echo "Accepted values: python, node"
+          exit 1
