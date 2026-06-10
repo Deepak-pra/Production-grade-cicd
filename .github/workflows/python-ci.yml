@@ -39,8 +39,9 @@ jobs:
 
       - name: Run flake8
         working-directory: apps/python
-        run: flake8 . --config .flake8
-        continue-on-error: true
+        run: |
+          flake8 . --config .flake8
+          echo "Flake8 passed — no issues found"
 
   unit-test:
     name: Unit Test
