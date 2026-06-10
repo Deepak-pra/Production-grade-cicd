@@ -9,6 +9,14 @@ on:
     paths:
       - "apps/node/**"
       - ".github/workflows/node-ci.yml"
+  pull_request:
+    branches:
+      - dev
+      - stage
+      - main
+    paths:
+      - "apps/node/**"
+      - ".github/workflows/node-ci.yml"
 
 jobs:
 
@@ -81,7 +89,8 @@ jobs:
       - name: Build Node app
         working-directory: apps/node
         run: |
-          npm run build
+          mkdir -p dist
+          npm pack --pack-destination dist/
           ls -lh dist/
 
       - name: Upload build artifact
