@@ -7,3 +7,6 @@ name = "shipfast-api"
 version = "1.0.0"
 description = "Shipfast API Python app"
 requires-python = ">=3.11"
+
+[tool.setuptools]
+py-modules = ["calculator", "pipeline"]
