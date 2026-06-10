@@ -4,6 +4,7 @@
   "description": "Node.js app for GHA CI/CD training demos",
   "main": "src/utils.js",
   "scripts": {
+    "build": "npm pack --pack-destination dist/",
     "test": "jest --coverage",
     "lint": "eslint src/ --ext .js"
   },

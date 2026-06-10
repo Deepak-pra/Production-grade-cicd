@@ -1,7 +1,7 @@
 name: Node - CI
 
 on:
-  push:
+  pull_request:
     branches:
       - dev
       - stage
@@ -10,20 +10,12 @@ on:
       - "apps/node/**"
       - ".github/workflows/node-ci.yml"
 
-  pull_request:
-    branches:
-        - dev
-        - stage
-        - main
-    paths:
-      - "apps/node/**"
-      - ".github/workflows/node-ci.yml"  
-
 jobs:
 
   lint:
-    name: Lint (eslint)
+    name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
@@ -42,10 +34,11 @@ jobs:
         working-directory: apps/node
         run: npm run lint
 
-  test:
-    name: Test (jest)
+  unit-test:
+    name: Unit Test
     runs-on: ubuntu-latest
     needs: lint
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -60,6 +53,62 @@ jobs:
         working-directory: apps/node
         run: npm install
 
-      - name: Run jest
+      - name: Run unit tests
         working-directory: apps/node
-        run: npm test
+        run: npx jest __tests__/utils.test.js --coverage
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: unit-test
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm install
+
+      - name: Run integration tests
+        working-directory: apps/node
+        run: npx jest __tests__/pipeline.test.js --coverage
+
+  build:
+    name: Build Node App
+    runs-on: ubuntu-latest
+    needs: [ unit-test, integration-test ]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm install
+
+      - name: Build Node app
+        working-directory: apps/node
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist/
+          ls -lh dist/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shipfast-api-node-${{ github.sha }}
+          path: apps/node/dist/
+          retention-days: 7
