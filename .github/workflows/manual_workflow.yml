@@ -1,0 +1,40 @@
+name: Manual Run
+on:
+    workflow_dispatch:
+        inputs:
+            target_branch:
+                description: "Target Branch"
+                type: choice
+                options:
+                    - dev
+                    - stage
+                    - main
+                required: true
+                default: dev
+            
+            run_tests:
+                description: "Run tests? (true/false)"
+                type: boolean
+                default: true
+                
+jobs:
+    manual_deploy:
+        name: Manual Deployment Pipeline
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        
+        steps:
+            - name: Show the inputs
+              run: |
+                echo "Workflow Dispatch Inputs"
+                echo "Target Branch: ${{ inputs.target_branch }}"
+                echo "Run tests: ${{ inputs.run_tests }}"
+
+            - name: Tests Selected
+              if: inputs.run_tests == true
+              run: echo "run_tests is true - test will run"
+              
+            - name: Tests Ignored
+              if: inputs.run_tests == false
+              run: echo "run_tests is false - tested will be ignored"
+  
