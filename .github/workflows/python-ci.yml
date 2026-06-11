@@ -202,13 +202,12 @@ jobs:
 
   # ── Runs only after trivy passes ─────────────────────────────────
   publish:
-    name: Publish to GitHub Packages
+    name: Publish to GitHub Releases
     runs-on: ubuntu-latest
     needs: trivy
     timeout-minutes: 10
     permissions:
-      contents: read
-      packages: write
+      contents: write
 
     steps:
       - name: Download build artifact
@@ -217,41 +216,34 @@ jobs:
           name: python-dist-${{ github.sha }}
           path: dist/
 
-      - name: Publish to GitHub Packages
+      - name: Publish to GitHub Releases
         run: |
           SHA=${{ github.sha }}
           SHORT_SHA="${SHA:0:7}"
           VERSION="1.0.0-dev-${SHORT_SHA}"
-          FILENAME=$(ls dist/*.whl)
 
-          echo "Publishing $FILENAME as version $VERSION"
+          echo "=== Publishing Python artifact ==="
+          echo "Version : $VERSION"
+          echo "SHA     : $SHA"
+          ls -lh dist/
 
-          curl --fail -L \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" \
-            -H "X-GitHub-Asset-Name: $(basename $FILENAME)" \
-            --data-binary @"$FILENAME" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/assets" \
-            || true
-
-          # Upload via GitHub CLI (simpler and more reliable)
           gh release create "python-${VERSION}" \
             --repo ${{ github.repository }} \
             --title "Python Build ${VERSION}" \
-            --notes "Automated build from CI — SHA: ${SHA}" \
+            --notes "Automated CI build — Branch: ${{ github.ref_name }} — SHA: ${SHA}" \
             --prerelease \
             dist/*.whl
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show published artifact info
+      - name: Show download URL
         run: |
           SHA=${{ github.sha }}
           SHORT_SHA="${SHA:0:7}"
           VERSION="1.0.0-dev-${SHORT_SHA}"
-          echo "=== Published to GitHub Releases ==="
-          echo "Version  : $VERSION"
-          echo "SHA      : $SHA"
-          echo "Repo     : ${{ github.repository }}"
-          echo "URL      : https://github.com/${{ github.repository }}/releases/tag/python-${VERSION}"
+          echo "=== Artifact available at ==="
+          echo "https://github.com/${{ github.repository }}/releases/tag/python-${VERSION}"
+          echo "CD can download with:"
+          echo "gh release download python-${VERSION} --repo ${{ github.repository }} --pattern '*.whl'"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

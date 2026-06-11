@@ -200,13 +200,12 @@ jobs:
 
   # ── Runs only after trivy passes ─────────────────────────────────
   publish:
-    name: Publish to GitHub Packages
+    name: Publish to GitHub Releases
     runs-on: ubuntu-latest
     needs: trivy
     timeout-minutes: 10
     permissions:
-      contents: read
-      packages: write
+      contents: write
 
     steps:
       - name: Download build artifact
@@ -215,33 +214,34 @@ jobs:
           name: node-dist-${{ github.sha }}
           path: dist/
 
-      - name: Publish to GitHub Packages
+      - name: Publish to GitHub Releases
         run: |
           SHA=${{ github.sha }}
           SHORT_SHA="${SHA:0:7}"
           VERSION="1.0.0-dev-${SHORT_SHA}"
-          FILENAME=$(ls dist/*.tgz)
 
-          echo "Publishing $FILENAME as version $VERSION"
+          echo "=== Publishing Node artifact ==="
+          echo "Version : $VERSION"
+          echo "SHA     : $SHA"
+          ls -lh dist/
 
           gh release create "node-${VERSION}" \
             --repo ${{ github.repository }} \
             --title "Node Build ${VERSION}" \
-            --notes "Automated build from CI — SHA: ${SHA}" \
+            --notes "Automated CI build — Branch: ${{ github.ref_name }} — SHA: ${SHA}" \
             --prerelease \
             dist/*.tgz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show published artifact info
+      - name: Show download URL
         run: |
           SHA=${{ github.sha }}
           SHORT_SHA="${SHA:0:7}"
           VERSION="1.0.0-dev-${SHORT_SHA}"
-          echo "=== Published to GitHub Releases ==="
-          echo "Version  : $VERSION"
-          echo "SHA      : $SHA"
-          echo "Repo     : ${{ github.repository }}"
-          echo "URL      : https://github.com/${{ github.repository }}/releases/tag/node-${VERSION}"
+          echo "=== Artifact available at ==="
+          echo "https://github.com/${{ github.repository }}/releases/tag/node-${VERSION}"
+          echo "CD can download with:"
+          echo "gh release download node-${VERSION} --repo ${{ github.repository }} --pattern '*.tgz'"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
