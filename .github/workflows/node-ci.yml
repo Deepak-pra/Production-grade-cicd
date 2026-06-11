@@ -1,6 +1,14 @@
 name: Node - CI
 
 on:
+  push:
+    branches:
+      - dev
+      - stage
+      - main
+    paths:
+      - "apps/node/**"
+      - ".github/workflows/node-ci.yml"
   pull_request:
     branches:
       - dev
@@ -36,9 +44,10 @@ jobs:
           npm run lint
           echo "ESLint passed — no issues found"
 
-  unit-test:
+  test:
     name: Unit Test (jest)
     runs-on: ubuntu-latest
+    needs: lint
     timeout-minutes: 10
 
     steps:
@@ -58,7 +67,7 @@ jobs:
         working-directory: apps/node
         run: npx jest __tests__/utils.test.js --coverage
 
-      - name: Upload coverage report
+      - name: Upload unit test coverage
         uses: actions/upload-artifact@v4
         with:
           name: node-unit-coverage
@@ -68,6 +77,7 @@ jobs:
   integration-test:
     name: Integration Test (jest)
     runs-on: ubuntu-latest
+    needs: test
     timeout-minutes: 10
 
     steps:
@@ -87,7 +97,7 @@ jobs:
         working-directory: apps/node
         run: npx jest __tests__/pipeline.test.js --coverage
 
-      - name: Upload coverage report
+      - name: Upload integration test coverage
         uses: actions/upload-artifact@v4
         with:
           name: node-integration-coverage
@@ -97,6 +107,7 @@ jobs:
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
+    needs: integration-test
     timeout-minutes: 10
 
     steps:
@@ -129,8 +140,12 @@ jobs:
   build:
     name: Build Node App
     runs-on: ubuntu-latest
-    needs: [ unit-test, integration-test, sonar ]
-    timeout-minutes: 5
+    needs: sonar
+    timeout-minutes: 10
+    if: github.event_name == 'push'
+
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     steps:
       - name: Checkout code
@@ -152,9 +167,50 @@ jobs:
           npm pack --pack-destination dist/
           ls -lh dist/
 
-      - name: Upload build artifact
+      - name: Compute version
+        id: ver
+        run: |
+          SHA="${{ github.sha }}"
+          VER="1.0.0-dev-${SHA:0:7}"
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Version: $VER"
+
+      # ── Trivy Security Scan ──────────────────────────────────────
+      # SHA-pinned to v0.35.0 (57a97c7) — safe version post supply chain incident (Mar 2026)
+      # aquasecurity/setup-trivy pinned to v0.2.6 (3fb12ec) — last known safe version
+      # Never use version tags — they were force-pushed with malicious code in the attack
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@3fb12ec4b9af6f21b8ac1c6b1b012c96f3308b3e
+        with:
+          cache: true
+          version: v0.69.3
+
+      - name: Scan Node artifact with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: apps/node/dist/
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+          skip-setup-trivy: true
+
+      - name: Export Trivy scan results
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: apps/node/dist/
+          format: json
+          output: trivy-node-results.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+          skip-setup-trivy: true
+
+      - name: Upload Trivy scan results
         uses: actions/upload-artifact@v4
         with:
-          name: shipfast-api-node-${{ github.sha }}
-          path: apps/node/dist/
+          name: trivy-node-scan-${{ github.sha }}
+          path: trivy-node-results.json
           retention-days: 7
