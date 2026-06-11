@@ -3,7 +3,8 @@ name: CD Build
 on:
   workflow_run:
     workflows:
-      - test
+      - Python CI
+      - Node - CI
     branches:
       - dev
       - stage
