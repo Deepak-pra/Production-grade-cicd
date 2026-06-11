@@ -1,15 +1,16 @@
 name: CD Build
 
 on:
-  workflow_dispatch:
- #   workflows:
-   #   - test
-   # branches:
-   #   - dev
-   #   - stage
-   #   - main
-   # types:
-   #   - completed
+  workflow_run:
+    workflows:
+      - Python CI
+      - Node - CI
+    branches:
+      - dev
+      - stage
+      - main
+    types:
+      - completed
 
 jobs:
 
