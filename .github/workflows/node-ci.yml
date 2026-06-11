@@ -119,7 +119,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test, sonar]
     timeout-minutes: 10
-    if: github.event_name == 'push'
 
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -158,7 +157,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 10
-    if: github.event_name == 'push'
 
     steps:
       - name: Checkout code
