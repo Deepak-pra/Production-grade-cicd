@@ -147,19 +147,17 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: node-dist-${{ github.sha }}
-          path: dist/
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Extract tarball for scanning
-        run: |
-          cd dist
-          mkdir -p tgz-contents
-          tar -xzf *.tgz -C tgz-contents
-          echo "Tarball contents:"
-          ls -lh tgz-contents/
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm install
 
       # SHA-pinned — safe version post Trivy supply chain incident (Mar 2026)
       # trivy-action v0.35.0 : 57a97c7e7821a5776cebc9bb87c984fa69cba8f1
@@ -170,22 +168,22 @@ jobs:
           cache: true
           version: v0.69.3
 
-      - name: Scan — table output
+      - name: Scan node_modules — table output
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
-          scan-ref: dist/tgz-contents/
+          scan-ref: apps/node/
           format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: 0
           skip-setup-trivy: true
 
-      - name: Scan — JSON output
+      - name: Scan node_modules — JSON output
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
-          scan-ref: dist/tgz-contents/
+          scan-ref: apps/node/
           format: json
           output: trivy-node-results.json
           severity: HIGH,CRITICAL
@@ -202,7 +200,7 @@ jobs:
 
   # ── Runs only after trivy passes ─────────────────────────────────
   publish:
-    name: Publish to GitHub Packages (GHCR)
+    name: Publish to GitHub Packages
     runs-on: ubuntu-latest
     needs: trivy
     timeout-minutes: 10
@@ -217,31 +215,33 @@ jobs:
           name: node-dist-${{ github.sha }}
           path: dist/
 
-      - name: Install ORAS CLI
-        run: |
-          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz
-          tar -xzf oras_1.2.2_linux_amd64.tar.gz
-          sudo mv oras /usr/local/bin/
-          oras version
-
-      - name: Login to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-          oras login ghcr.io \
-            --username ${{ github.actor }} \
-            --password-stdin
-
-      - name: Push tarball to GHCR
+      - name: Publish to GitHub Packages
         run: |
           SHA=${{ github.sha }}
-          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          TGZ_FILE=$(ls dist/*.tgz | head -1)
-          TGZ_NAME=$(basename $TGZ_FILE)
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          FILENAME=$(ls dist/*.tgz)
 
-          oras push \
-            ghcr.io/${REPO_LOWER}/shipfast-node:${SHA} \
-            --artifact-type application/vnd.shipfast.node \
-            ${TGZ_FILE}
+          echo "Publishing $FILENAME as version $VERSION"
 
-          echo "Published: ghcr.io/${REPO_LOWER}/shipfast-node:${SHA}"
-          echo "Artifact:  ${TGZ_NAME}"
+          gh release create "node-${VERSION}" \
+            --repo ${{ github.repository }} \
+            --title "Node Build ${VERSION}" \
+            --notes "Automated build from CI — SHA: ${SHA}" \
+            --prerelease \
+            dist/*.tgz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show published artifact info
+        run: |
+          SHA=${{ github.sha }}
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          echo "=== Published to GitHub Releases ==="
+          echo "Version  : $VERSION"
+          echo "SHA      : $SHA"
+          echo "Repo     : ${{ github.repository }}"
+          echo "URL      : https://github.com/${{ github.repository }}/releases/tag/node-${VERSION}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
