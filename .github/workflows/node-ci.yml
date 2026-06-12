@@ -1,14 +1,6 @@
 name: Node - CI
 
 on:
-  push:
-    branches:
-      - dev
-      - stage
-      - main
-    paths:
-      - "apps/node/**"
-      - ".github/workflows/node-ci.yml"
   pull_request:
     branches:
       - dev
@@ -20,7 +12,6 @@ on:
 
 jobs:
 
-  # ── Runs in parallel with test and sonar ──────────────────────────
   lint:
     name: Lint (eslint)
     runs-on: ubuntu-latest
@@ -45,7 +36,6 @@ jobs:
           npm run lint
           echo "ESLint passed — no issues found"
 
-  # ── Runs in parallel with lint and sonar ─────────────────────────
   test:
     name: Unit & Integration Test (jest)
     runs-on: ubuntu-latest
@@ -72,15 +62,6 @@ jobs:
         working-directory: apps/node
         run: npx jest __tests__/pipeline.test.js --coverage
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-test-results
-          path: apps/node/coverage/
-          retention-days: 3
-
-  # ── Runs in parallel with lint and test ──────────────────────────
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
@@ -113,16 +94,11 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
-  # ── Runs only after lint + test + sonar all pass ──────────────────
   build:
     name: Build Node App
     runs-on: ubuntu-latest
     needs: [lint, test, sonar]
     timeout-minutes: 10
-    if: github.event_name == 'push'
-
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
 
     steps:
       - name: Checkout code
@@ -144,21 +120,18 @@ jobs:
           npm pack --pack-destination dist/
           ls -lh dist/
 
-      - name: Compute version
-        id: ver
-        run: |
-          SHA="${{ github.sha }}"
-          VER="1.0.0-dev-${SHA:0:7}"
-          echo "version=$VER" >> $GITHUB_OUTPUT
-          echo "Version: $VER"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-dist-${{ github.sha }}
+          path: apps/node/dist/
+          retention-days: 1
 
-  # ── Runs only after build passes ─────────────────────────────────
   trivy:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 10
-    if: github.event_name == 'push'
 
     steps:
       - name: Checkout code
@@ -169,37 +142,32 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Rebuild artifact for scan
+      - name: Install dependencies
         working-directory: apps/node
-        run: |
-          npm install
-          mkdir -p dist
-          npm pack --pack-destination dist/
+        run: npm install
 
-      # SHA-pinned to v0.35.0 — safe version confirmed post supply chain incident (Mar 2026)
-      # Full SHA from: https://github.com/aquasecurity/setup-trivy/releases/tag/v0.2.6
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514
         with:
           cache: true
           version: v0.69.3
 
-      - name: Scan Node artifact — table output
+      - name: Scan node_modules — table output
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
-          scan-ref: apps/node/dist/
+          scan-ref: apps/node/
           format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: 0
           skip-setup-trivy: true
 
-      - name: Scan Node artifact — JSON output
+      - name: Scan node_modules — JSON output
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
-          scan-ref: apps/node/dist/
+          scan-ref: apps/node/
           format: json
           output: trivy-node-results.json
           severity: HIGH,CRITICAL
@@ -214,40 +182,49 @@ jobs:
           path: trivy-node-results.json
           retention-days: 7
 
-  # ── Runs only after trivy passes ─────────────────────────────────
-  jfrog-upload:
-    name: JFrog Upload
+  publish:
+    name: Publish to GitHub Releases
     runs-on: ubuntu-latest
     needs: trivy
     timeout-minutes: 10
-    if: github.event_name == 'push'
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
         with:
-          node-version: "20"
+          name: node-dist-${{ github.sha }}
+          path: dist/
 
-      - name: Rebuild artifact for upload
-        working-directory: apps/node
-        run: |
-          npm install
-          mkdir -p dist
-          npm pack --pack-destination dist/
-
-      - name: Setup JFrog CLI
-        uses: jfrog/setup-jfrog-cli@v4
-        env:
-          JF_URL: ${{ vars.JFROG_URL }}
-          JF_ACCESS_TOKEN: ${{ secrets.JFROG_TOKEN }}
-
-      - name: Upload to JFrog
+      - name: Publish to GitHub Releases
         run: |
           SHA=${{ github.sha }}
-          jf rt upload \
-            'apps/node/dist/*.tgz' \
-            "shipfast-node/${SHA}/"
-          echo "Uploaded shipfast-node tarball for SHA: $SHA"
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+
+          echo "=== Publishing Node artifact ==="
+          echo "Version : $VERSION"
+          echo "SHA     : $SHA"
+          ls -lh dist/
+
+          gh release create "node-${VERSION}" \
+            --repo ${{ github.repository }} \
+            --title "Node Build ${VERSION}" \
+            --notes "Automated CI build — Branch: ${{ github.ref_name }} — SHA: ${SHA}" \
+            --prerelease \
+            dist/*.tgz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show download URL
+        run: |
+          SHA=${{ github.sha }}
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          echo "=== Artifact available at ==="
+          echo "https://github.com/${{ github.repository }}/releases/tag/node-${VERSION}"
+          echo "CD can download with:"
+          echo "gh release download node-${VERSION} --repo ${{ github.repository }} --pattern '*.tgz'"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
