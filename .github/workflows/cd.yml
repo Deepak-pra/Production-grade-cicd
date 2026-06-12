@@ -3,7 +3,8 @@ name: CD Build
 on:
   workflow_run:
     workflows:
-      - test
+      - "Python CI"
+      - "Node - CI"
     branches:
       - dev
       - stage
@@ -13,62 +14,158 @@ on:
 
 jobs:
 
-  python-build:
-    name: Build Python App
+  deploy-python:
+    name: Deploy Python App
     runs-on: ubuntu-latest
 
     if: |
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.name == 'Python CI'
 
+    permissions:
+      contents: read
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        working-directory: apps/python
-        run: pip install -r requirements.txt
-
-      - name: Build Python App
-        working-directory: apps/python
+      - name: Show triggering CI run info
         run: |
-          mkdir -p dist
-          cp calculator.py requirements.txt dist/
-          echo "Build: ${{ github.event.workflow_run.head_sha }}" > dist/build-info.txt
-          ls -lh dist/
+          echo "================================================"
+          echo "  CD triggered by: Python CI"
+          echo "================================================"
+          echo "  Workflow  : ${{ github.event.workflow_run.name }}"
+          echo "  Branch    : ${{ github.event.workflow_run.head_branch }}"
+          echo "  SHA       : ${{ github.event.workflow_run.head_sha }}"
+          echo "  CI Run ID : ${{ github.event.workflow_run.id }}"
+          echo "  Triggered : ${{ github.event.workflow_run.created_at }}"
+          echo "================================================"
 
-  node-build:
-    name: Build Node App
+      - name: Compute version from SHA
+        id: ver
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo ""
+          echo "Version to download: ${VERSION}"
+
+      - name: Download Python artifact from GitHub Releases
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+
+          echo "================================================"
+          echo "  Downloading artifact"
+          echo "================================================"
+          echo "  Release tag : python-${VERSION}"
+          echo "  Pattern     : *.whl"
+          echo "  Destination : dist/"
+          echo "================================================"
+
+          mkdir -p dist
+
+          gh release download "python-${VERSION}" \
+            --repo ${{ github.repository }} \
+            --pattern "*.whl" \
+            --dir dist/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify downloaded artifact
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          SHA=${{ steps.ver.outputs.sha }}
+
+          echo "================================================"
+          echo "  Artifact verification"
+          echo "================================================"
+          echo "  Version   : ${VERSION}"
+          echo "  SHA       : ${SHA}"
+          echo ""
+          echo "  Files downloaded:"
+          ls -lh dist/
+          echo ""
+          echo "  Artifact name:"
+          ls dist/*.whl
+          echo "================================================"
+          echo "  ✓ Same binary CI built, tested and scanned"
+          echo "  ✓ No rebuild in CD"
+          echo "  ✓ Ready to deploy to EC2 (Day 7)"
+          echo "================================================"
+
+  deploy-node:
+    name: Deploy Node App
     runs-on: ubuntu-latest
 
     if: |
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.name == 'Node - CI'
 
+    permissions:
+      contents: read
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install dependencies
-        working-directory: apps/node
-        run: npm install
-
-      - name: Build Node App
-        working-directory: apps/node
+      - name: Show triggering CI run info
         run: |
-          npm pack
-          ls -lh *.tgz
+          echo "================================================"
+          echo "  CD triggered by: Node - CI"
+          echo "================================================"
+          echo "  Workflow  : ${{ github.event.workflow_run.name }}"
+          echo "  Branch    : ${{ github.event.workflow_run.head_branch }}"
+          echo "  SHA       : ${{ github.event.workflow_run.head_sha }}"
+          echo "  CI Run ID : ${{ github.event.workflow_run.id }}"
+          echo "  Triggered : ${{ github.event.workflow_run.created_at }}"
+          echo "================================================"
+
+      - name: Compute version from SHA
+        id: ver
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo ""
+          echo "Version to download: ${VERSION}"
+
+      - name: Download Node artifact from GitHub Releases
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+
+          echo "================================================"
+          echo "  Downloading artifact"
+          echo "================================================"
+          echo "  Release tag : node-${VERSION}"
+          echo "  Pattern     : *.tgz"
+          echo "  Destination : dist/"
+          echo "================================================"
+
+          mkdir -p dist
+
+          gh release download "node-${VERSION}" \
+            --repo ${{ github.repository }} \
+            --pattern "*.tgz" \
+            --dir dist/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify downloaded artifact
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          SHA=${{ steps.ver.outputs.sha }}
+
+          echo "================================================"
+          echo "  Artifact verification"
+          echo "================================================"
+          echo "  Version   : ${VERSION}"
+          echo "  SHA       : ${SHA}"
+          echo ""
+          echo "  Files downloaded:"
+          ls -lh dist/
+          echo ""
+          echo "  Artifact name:"
+          ls dist/*.tgz
+          echo "================================================"
+          echo "  ✓ Same binary CI built, tested and scanned"
+          echo "  ✓ No rebuild in CD"
+          echo "  ✓ Ready to deploy to EC2 (Day 7)"
+          echo "================================================"

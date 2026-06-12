@@ -18,71 +18,280 @@ on:
         type: string
         required: true
 
+# ─────────────────────────────────────────────────────────────────────
+# DEMO GUIDE — What this workflow demonstrates:
+#
+# Step outputs   → set in one step, read in the next step (same job)
+# Job outputs    → set in job-a, read in job-b via needs.job-a.outputs
+# Env vars       → set in one step, available to ALL remaining steps
+# Data flow      → version string flows from job-a → job-b → job-c
+# Conditional    → steps run or skip based on app_type input
+# ─────────────────────────────────────────────────────────────────────
+
 jobs:
-  manual-run:
-    name: Manual Deployment Pipeline
+
+  # ── JOB A — Setup & Validate ──────────────────────────────────────
+  # Demonstrates: step outputs, env vars, input validation
+  # ─────────────────────────────────────────────────────────────────
+  setup:
+    name: "Job A — Setup & Validate"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+
+    outputs:
+      # Job output — declared here, set by step below
+      # Read in job-b and job-c via needs.setup.outputs.version
+      version: ${{ steps.compute-version.outputs.version }}
+      app_type: ${{ steps.validate.outputs.app_type }}
+      run_timestamp: ${{ steps.compute-version.outputs.run_timestamp }}
 
     steps:
+      - name: Show workflow inputs
+        run: |
+          echo "================================================"
+          echo "  Manual Run — Workflow Dispatch"
+          echo "================================================"
+          echo "  Target Branch : ${{ inputs.target_branch }}"
+          echo "  App Type      : ${{ inputs.app_type }}"
+          echo "  Triggered by  : ${{ github.actor }}"
+          echo "  SHA           : ${{ github.sha }}"
+          echo "================================================"
+
+      # ── Step output demo ──────────────────────────────
+      # This step sets a step output (steps.validate.outputs.app_type)
+      # The NEXT step reads it via ${{ steps.validate.outputs.app_type }}
+      # It also sets an env var via $GITHUB_ENV — available to ALL remaining steps
+      - name: Validate app type
+        id: validate
+        run: |
+          APP="${{ inputs.app_type }}"
+
+          if [ "$APP" != "python" ] && [ "$APP" != "node" ]; then
+            echo "❌ Invalid app_type: '$APP'"
+            echo "   Accepted values: python, node"
+            exit 1
+          fi
+
+          echo "✓ app_type is valid: $APP"
+
+          # Write step output — readable by next steps in this job only
+          echo "app_type=${APP}" >> $GITHUB_OUTPUT
+
+          # Write env var — readable by ALL remaining steps in this job
+          echo "APP_TYPE=${APP}" >> $GITHUB_ENV
+
+          echo ""
+          echo "Step output set  : steps.validate.outputs.app_type = $APP"
+          echo "Env var set      : APP_TYPE = $APP"
+
+      # ── Reading step output from previous step ────────
+      # Reads steps.validate.outputs.app_type set above
+      # Also reads $APP_TYPE from $GITHUB_ENV set above
+      - name: Confirm validation — reads step output
+        run: |
+          echo "================================================"
+          echo "  Reading outputs from previous step"
+          echo "================================================"
+          echo "  Via step output  : ${{ steps.validate.outputs.app_type }}"
+          echo "  Via env var      : $APP_TYPE"
+          echo "  Both are the same value — different mechanisms"
+          echo "================================================"
+
+      # ── Step output → job output demo ─────────────────
+      # This step sets a step output (steps.compute-version.outputs.version)
+      # That step output is ALSO declared as a job output above
+      # Downstream jobs can read it via needs.setup.outputs.version
+      - name: Compute version
+        id: compute-version
+        run: |
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S UTC')
+
+          echo "================================================"
+          echo "  Computing version"
+          echo "================================================"
+          echo "  Full SHA    : $SHA"
+          echo "  Short SHA   : $SHORT_SHA"
+          echo "  Version     : $VERSION"
+          echo "  Timestamp   : $TIMESTAMP"
+          echo "================================================"
+
+          # Step output — readable by next steps in this job
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "run_timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+          # Also set as env var for remaining steps in this job
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+          echo ""
+          echo "Step output set : steps.compute-version.outputs.version = $VERSION"
+          echo "Job output will be exposed as: needs.setup.outputs.version"
+
+      # ── Reading step output in the same job ───────────
+      - name: Show version — reads step output in same job
+        run: |
+          echo "================================================"
+          echo "  Reading step output in same job"
+          echo "================================================"
+          echo "  Via step output  : ${{ steps.compute-version.outputs.version }}"
+          echo "  Via env var      : $VERSION"
+          echo ""
+          echo "  NOTE: step outputs use expression syntax"
+          echo "        env vars use shell variable syntax"
+          echo "================================================"
+
+  # ── JOB B — CI Steps ─────────────────────────────────────────────
+  # Demonstrates: reading job outputs from Job A via needs.setup.outputs
+  # Steps run conditionally based on app_type from Job A's output
+  # ─────────────────────────────────────────────────────────────────
+  ci:
+    name: "Job B — CI (${{ needs.setup.outputs.app_type }})"
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 10
+
+    outputs:
+      # Job output set by steps below — passed to Job C
+      ci_status: ${{ steps.set-status.outputs.ci_status }}
+      artifact_name: ${{ steps.set-status.outputs.artifact_name }}
+
+    steps:
+      # ── Reading job output from Job A ─────────────────
+      - name: Show job outputs received from Job A
+        run: |
+          echo "================================================"
+          echo "  Job B — reading outputs from Job A"
+          echo "================================================"
+          echo "  needs.setup.outputs.version       : ${{ needs.setup.outputs.version }}"
+          echo "  needs.setup.outputs.app_type      : ${{ needs.setup.outputs.app_type }}"
+          echo "  needs.setup.outputs.run_timestamp : ${{ needs.setup.outputs.run_timestamp }}"
+          echo "================================================"
+          echo "  These values were SET in Job A and are"
+          echo "  now available here via needs.setup.outputs"
+          echo "================================================"
+
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Show inputs
-        run: |
-          echo "=== Workflow Dispatch Inputs ==="
-          echo "Target Branch : ${{ inputs.target_branch }}"
-          echo "App Type      : ${{ inputs.app_type }}"
-
-      # ── Python steps ─────────────────────────────────
+      # ── Python CI steps (conditional) ─────────────────
       - name: Set up Python
-        if: inputs.app_type == 'python'
+        if: needs.setup.outputs.app_type == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        if: inputs.app_type == 'python'
+        if: needs.setup.outputs.app_type == 'python'
         working-directory: apps/python
         run: pip install -r requirements.txt
 
       - name: Run flake8
-        if: inputs.app_type == 'python'
+        if: needs.setup.outputs.app_type == 'python'
         working-directory: apps/python
-        run: flake8 . --config .flake8
+        run: |
+          flake8 . --config .flake8
+          echo "Flake8 passed"
         continue-on-error: true
 
       - name: Run pytest
-        if: inputs.app_type == 'python'
+        if: needs.setup.outputs.app_type == 'python'
         working-directory: apps/python
         run: pytest tests/ -v
 
-      # ── Node steps ───────────────────────────────────
+      # ── Node CI steps (conditional) ───────────────────
       - name: Set up Node.js
-        if: inputs.app_type == 'node'
+        if: needs.setup.outputs.app_type == 'node'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Install Node dependencies
-        if: inputs.app_type == 'node'
+        if: needs.setup.outputs.app_type == 'node'
         working-directory: apps/node
         run: npm install
 
       - name: Run eslint
-        if: inputs.app_type == 'node'
+        if: needs.setup.outputs.app_type == 'node'
         working-directory: apps/node
         run: npm run lint
 
       - name: Run jest
-        if: inputs.app_type == 'node'
+        if: needs.setup.outputs.app_type == 'node'
         working-directory: apps/node
         run: npm test
 
-      # ── Invalid input guard ──────────────────────────
-      - name: Invalid app type
-        if: inputs.app_type != 'python' && inputs.app_type != 'node'
+      # ── Set job output for Job C ───────────────────────
+      # This step sets outputs that Job C will read via
+      # needs.ci.outputs.ci_status and needs.ci.outputs.artifact_name
+      - name: Set CI status output
+        id: set-status
         run: |
-          echo "Invalid app_type: '${{ inputs.app_type }}'"
-          echo "Accepted values: python, node"
-          exit 1
+          APP="${{ needs.setup.outputs.app_type }}"
+          VERSION="${{ needs.setup.outputs.version }}"
+          ARTIFACT="${APP}-dist-${VERSION}"
+
+          echo "================================================"
+          echo "  Setting job output for Job C"
+          echo "================================================"
+          echo "  ci_status    = passed"
+          echo "  artifact_name = $ARTIFACT"
+          echo "================================================"
+
+          echo "ci_status=passed" >> $GITHUB_OUTPUT
+          echo "artifact_name=${ARTIFACT}" >> $GITHUB_OUTPUT
+
+  # ── JOB C — Summary ───────────────────────────────────────────────
+  # Demonstrates: reading job outputs from BOTH Job A and Job B
+  # Shows the complete data flow from start to end
+  # ─────────────────────────────────────────────────────────────────
+  summary:
+    name: "Job C — Pipeline Summary"
+    runs-on: ubuntu-latest
+    needs: [setup, ci]
+    timeout-minutes: 5
+
+    steps:
+      - name: Show complete data flow
+        run: |
+          echo "================================================"
+          echo "  Job C — reading outputs from Job A AND Job B"
+          echo "================================================"
+          echo ""
+          echo "  FROM JOB A (needs.setup.outputs):"
+          echo "    version       : ${{ needs.setup.outputs.version }}"
+          echo "    app_type      : ${{ needs.setup.outputs.app_type }}"
+          echo "    run_timestamp : ${{ needs.setup.outputs.run_timestamp }}"
+          echo ""
+          echo "  FROM JOB B (needs.ci.outputs):"
+          echo "    ci_status     : ${{ needs.ci.outputs.ci_status }}"
+          echo "    artifact_name : ${{ needs.ci.outputs.artifact_name }}"
+          echo ""
+          echo "================================================"
+          echo "  COMPLETE DATA FLOW SUMMARY"
+          echo "================================================"
+          echo ""
+          echo "  Step output  (Job A, step 2) ──→ step 3 reads it"
+          echo "  Step output  (Job A, step 4) ──→ step 5 reads it"
+          echo "  Job  output  (Job A)         ──→ Job B reads via needs.setup.outputs"
+          echo "  Job  output  (Job A)         ──→ Job C reads via needs.setup.outputs"
+          echo "  Job  output  (Job B)         ──→ Job C reads via needs.ci.outputs"
+          echo ""
+          echo "  Env var      (Job A, step 2) ──→ remaining steps in Job A only"
+          echo ""
+          echo "================================================"
+          echo "  KEY RULES:"
+          echo "  1. Step outputs   → same job only"
+          echo "  2. Job  outputs   → downstream jobs in same workflow"
+          echo "  3. Env vars       → remaining steps in same job"
+          echo "  4. None of these  → cross-workflow (need external store)"
+          echo "================================================"
+          echo ""
+          echo "  Branch    : ${{ inputs.target_branch }}"
+          echo "  App       : ${{ needs.setup.outputs.app_type }}"
+          echo "  Version   : ${{ needs.setup.outputs.version }}"
+          echo "  CI Status : ${{ needs.ci.outputs.ci_status }}"
+          echo "  Artifact  : ${{ needs.ci.outputs.artifact_name }}"
+          echo ""
+          echo "  ✓ Manual run complete"
