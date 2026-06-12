@@ -1,14 +1,6 @@
 name: Node - CI
 
 on:
-  push:
-    branches:
-      - dev
-      - stage
-      - main
-    paths:
-      - "apps/node/**"
-      - ".github/workflows/node-ci.yml"
   pull_request:
     branches:
       - dev
@@ -20,7 +12,6 @@ on:
 
 jobs:
 
-  # ── Runs in parallel with test and sonar ──────────────────────────
   lint:
     name: Lint (eslint)
     runs-on: ubuntu-latest
@@ -45,7 +36,6 @@ jobs:
           npm run lint
           echo "ESLint passed — no issues found"
 
-  # ── Runs in parallel with lint and sonar ─────────────────────────
   test:
     name: Unit & Integration Test (jest)
     runs-on: ubuntu-latest
@@ -72,7 +62,6 @@ jobs:
         working-directory: apps/node
         run: npx jest __tests__/pipeline.test.js --coverage
 
-  # ── Runs in parallel with lint and test ──────────────────────────
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
@@ -105,7 +94,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
-  # ── Runs only after lint + test + sonar all pass ──────────────────
   build:
     name: Build Node App
     runs-on: ubuntu-latest
@@ -139,7 +127,6 @@ jobs:
           path: apps/node/dist/
           retention-days: 1
 
-  # ── Runs only after build passes ─────────────────────────────────
   trivy:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
@@ -159,9 +146,6 @@ jobs:
         working-directory: apps/node
         run: npm install
 
-      # SHA-pinned — safe version post Trivy supply chain incident (Mar 2026)
-      # trivy-action v0.35.0 : 57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-      # setup-trivy v0.2.6   : 3fb12ec12f41e471780db15c232d5dd185dcb514
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514
         with:
@@ -198,7 +182,6 @@ jobs:
           path: trivy-node-results.json
           retention-days: 7
 
-  # ── Runs only after trivy passes ─────────────────────────────────
   publish:
     name: Publish to GitHub Releases
     runs-on: ubuntu-latest
