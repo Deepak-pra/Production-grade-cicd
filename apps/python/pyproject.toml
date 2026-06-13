@@ -1,8 +1,33 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68.0", "wheel", "build==1.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "shipfast-api-python"
 version = "1.0.0"
-description = "
+description = "Shipfast Python app for GitHub Actions CI/CD training"
+requires-python = ">=3.11"
+dependencies = [
+    "requests==2.18.0"
+]
+
+[project.scripts]
+shipfast-python = "app:main"
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "calculator",
+    "pipeline"
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "*/__pycache__/*"
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
