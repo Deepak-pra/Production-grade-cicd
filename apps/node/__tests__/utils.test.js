@@ -2,6 +2,7 @@
  * Tests for utils.js
  * Run with: npm test
  */
+
 const { add, subtract, multiply, divide, isEven } = require("../src/utils");
 
 describe("add", () => {
