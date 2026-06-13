@@ -1,18 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools    "pipeline"build-backend = "setuptools.build_meta"
-]
-
-[tool.coverage.run]
-source = ["."]
-omit = [
-    "tests/*",
-    "*/__pycache__/*"
-]
-
-[tool.coverage.report]
-show_missing = true
-skip_empty = true
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "shipfast-api-python"
@@ -30,3 +18,16 @@ shipfast-python = "app:main"
 py-modules = [
     "app",
     "calculator",
+    "pipeline"
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "*/__pycache__/*"
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
