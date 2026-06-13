@@ -1,5 +1,2 @@
-pytest==8.2.2
-flake8==7.1.0
-pytest-cov==5.0.0
-# Intentionally old version for Trivy CVE demo — DO NOT use in production
-requests==2.18.0
+
+requests==2.34.2
