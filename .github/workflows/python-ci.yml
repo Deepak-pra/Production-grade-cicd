@@ -1,6 +1,15 @@
 name: Python CI
 
 on:
+  push:
+    branches:
+      - dev
+      - stage
+      - main
+    paths:
+      - "apps/python/**"
+      - ".github/workflows/python-ci.yml"
+
   pull_request:
     branches:
       - dev
@@ -10,15 +19,21 @@ on:
       - "apps/python/**"
       - ".github/workflows/python-ci.yml"
 
-jobs:
+permissions:
+  contents: read
 
+defaults:
+  run:
+    shell: bash
+
+jobs:
   lint:
     name: Lint (flake8)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -26,22 +41,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install flake8
-        run: pip install flake8==7.1.0
+      - name: Install lint dependencies
+        working-directory: apps/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
       - name: Run flake8
         working-directory: apps/python
         run: |
           flake8 . --config .flake8
-          echo "Flake8 passed — no issues found"
 
   test:
     name: Unit & Integration Test (pytest)
     runs-on: ubuntu-latest
+    needs: lint
     timeout-minutes: 10
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -49,25 +67,45 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Validate pyproject.toml
         working-directory: apps/python
-        run: pip install -r requirements.txt
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
 
-      - name: Run unit tests
-        working-directory: apps/python
-        run: pytest tests/test_calculator.py -v
+          tomllib.loads(Path("pyproject.toml").read_text())
+          print("pyproject.toml is valid TOML")
+          PY
 
-      - name: Run integration tests
+      - name: Install test dependencies
         working-directory: apps/python
-        run: pytest tests/test_pipeline.py -v
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        working-directory: apps/python
+        run: |
+          pytest tests/ -v --cov=. --cov-report=xml:coverage.xml --cov-report=term-missing
+
+      - name: Upload Python coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-${{ github.sha }}
+          path: apps/python/coverage.xml
+          retention-days: 7
+          if-no-files-found: error
 
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
+    needs: test
     timeout-minutes: 10
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -79,28 +117,36 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/python
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-      - name: Run full test suite with coverage
+      - name: Generate coverage for SonarCloud
         working-directory: apps/python
-        run: pytest tests/ -v --cov=. --cov-report=xml:coverage.xml
+        run: |
+          pytest tests/ -v --cov=. --cov-report=xml:coverage.xml --cov-report=term-missing
 
-      - name: SonarQube Scan
+      - name: Run SonarQube scan
         uses: SonarSource/sonarqube-scan-action@v6
-        with:
-          projectBaseDir: apps/python
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: apps/python
 
   build:
     name: Build Python App
     runs-on: ubuntu-latest
-    needs: [lint, test, sonar]
+    needs: sonar
+    if: github.event_name == 'push'
     timeout-minutes: 10
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -108,124 +154,118 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies and build tool
-        working-directory: apps/python
-        run: pip install -r requirements.txt build==1.2.1
+      - name: Compute version
+        id: version
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          VERSION="1.0.0-dev-${SHORT_SHA}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Computed version: ${VERSION}"
 
-      - name: Build Python app
+      - name: Install build dependencies
+        working-directory: apps/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Build Python wheel
         working-directory: apps/python
         run: |
           python -m build
+          echo "Python build output:"
           ls -lh dist/
 
-      - name: Upload build artifact
+      - name: Upload Python build artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-dist-${{ github.sha }}
-          path: apps/python/dist/
-          retention-days: 1
+          path: apps/python/dist/*.whl
+          retention-days: 7
+          if-no-files-found: error
 
   trivy:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
     needs: build
+    if: github.event_name == 'push'
     timeout-minutes: 10
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Download Python build artifact
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.11"
+          name: python-dist-${{ github.sha }}
+          path: apps/python/dist/
 
-      - name: Install dependencies into target folder
-        working-directory: apps/python
+      - name: Show Python artifact before scan
         run: |
-          pip install -r requirements.txt --target installed-deps/
-          echo "Installed packages:"
-          ls installed-deps/
+          echo "Downloaded Python artifact:"
+          ls -lh apps/python/dist/
 
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514
-        with:
-          cache: true
-          version: v0.69.3
-
-      - name: Scan installed dependencies — table output
+      - name: Run Trivy scan on Python dependencies
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
-          scan-ref: apps/python/installed-deps/
+          scan-ref: apps/python/
+          scanners: vuln
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: 0
-          skip-setup-trivy: true
-
-      - name: Scan installed dependencies — JSON output
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          scan-type: fs
-          scan-ref: apps/python/installed-deps/
-          format: json
-          output: trivy-python-results.json
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: 0
-          skip-setup-trivy: true
-
-      - name: Upload Trivy scan results
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-python-scan-${{ github.sha }}
-          path: trivy-python-results.json
-          retention-days: 7
+          exit-code: 1
+          ignore-unfixed: false
 
   publish:
     name: Publish to GitHub Releases
     runs-on: ubuntu-latest
-    needs: trivy
+    needs:
+      - build
+      - trivy
+    if: github.event_name == 'push'
     timeout-minutes: 10
+
     permissions:
       contents: write
 
     steps:
-      - name: Download build artifact
+      - name: Download Python build artifact
         uses: actions/download-artifact@v4
         with:
           name: python-dist-${{ github.sha }}
           path: dist/
 
-      - name: Publish to GitHub Releases
+      - name: Publish Python artifact to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          SHA=${{ github.sha }}
-          SHORT_SHA="${SHA:0:7}"
-          VERSION="1.0.0-dev-${SHORT_SHA}"
+          set -euo pipefail
 
-          echo "=== Publishing Python artifact ==="
-          echo "Version : $VERSION"
-          echo "SHA     : $SHA"
+          RELEASE_TAG="python-${VERSION}"
+
+          echo "=================================================="
+          echo "Publishing Python artifact"
+          echo "=================================================="
+          echo "Version     : ${VERSION}"
+          echo "Release tag : ${RELEASE_TAG}"
+          echo "Branch      : ${GITHUB_REF_NAME}"
+          echo "SHA         : ${GITHUB_SHA}"
+          echo "Artifact:"
           ls -lh dist/
+          echo "=================================================="
 
-          gh release create "python-${VERSION}" \
-            --repo ${{ github.repository }} \
-            --title "Python Build ${VERSION}" \
-            --notes "Automated CI build — Branch: ${{ github.ref_name }} — SHA: ${SHA}" \
-            --prerelease \
-            dist/*.whl
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Show download URL
-        run: |
-          SHA=${{ github.sha }}
-          SHORT_SHA="${SHA:0:7}"
-          VERSION="1.0.0-dev-${SHORT_SHA}"
-          echo "=== Artifact available at ==="
-          echo "https://github.com/${{ github.repository }}/releases/tag/python-${VERSION}"
-          echo "CD can download with:"
-          echo "gh release download python-${VERSION} --repo ${{ github.repository }} --pattern '*.whl'"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists. Uploading asset with clobber."
+            gh release upload "${RELEASE_TAG}" dist/*.whl \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${RELEASE_TAG}" dist/*.whl \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Python Build ${VERSION}" \
+              --notes "Python artifact built from ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}" \
+              --prerelease
+          fi

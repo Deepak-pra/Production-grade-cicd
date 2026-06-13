@@ -3,5 +3,6 @@ flake8==7.1.0
 pytest-cov==5.0.0
 build==1.2.1
 
-# Intentionally old version for Trivy CVE demo — DO NOT use in production
-requests==2.18.0
+# Clean runtime dependency used only to make dependency scanning meaningful.
+# Do not use old vulnerable versions like requests==2.18.0.
+requests==2.34.2

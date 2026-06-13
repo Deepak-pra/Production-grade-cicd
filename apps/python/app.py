@@ -64,6 +64,9 @@ class ShipfastHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def log_message(self, format, *args):
+        return
+
 
 def main():
     port = int(os.environ.get("PORT", "8000"))
