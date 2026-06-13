@@ -1,0 +1,403 @@
+name: Artifact Download
+
+on:
+  workflow_run:
+    workflows:
+      - "Python CI"
+      - "Node - CI"
+    branches:
+      - dev
+      - stage
+      - main
+      - prod
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  download-python-artifact:
+    name: Download Python Artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.name == 'Python CI'
+      }}
+
+    steps:
+      - name: Show triggering CI run info
+        run: |
+          echo "================================================"
+          echo "  Artifact Download triggered by Python CI"
+          echo "================================================"
+          echo "  Workflow   : ${{ github.event.workflow_run.name }}"
+          echo "  Event      : ${{ github.event.workflow_run.event }}"
+          echo "  Conclusion : ${{ github.event.workflow_run.conclusion }}"
+          echo "  Branch     : ${{ github.event.workflow_run.head_branch }}"
+          echo "  SHA        : ${{ github.event.workflow_run.head_sha }}"
+          echo "  CI Run ID  : ${{ github.event.workflow_run.id }}"
+          echo "  Triggered  : ${{ github.event.workflow_run.created_at }}"
+          echo "================================================"
+
+      - name: Compute Python release tag
+        id: ver
+        env:
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${TRIGGER_SHA:0:7}"
+
+          case "${TRIGGER_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            prod)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported source branch: ${TRIGGER_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="python-${VERSION}"
+
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "environment_name=${ENVIRONMENT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${TRIGGER_SHA}" >> "$GITHUB_OUTPUT"
+          echo "branch=${TRIGGER_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "================================================"
+          echo "  Computed Python artifact version"
+          echo "================================================"
+          echo "  Branch      : ${TRIGGER_BRANCH}"
+          echo "  Environment : ${ENVIRONMENT_NAME}"
+          echo "  SHA         : ${TRIGGER_SHA}"
+          echo "  Short SHA   : ${SHORT_SHA}"
+          echo "  Version     : ${VERSION}"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "================================================"
+
+      - name: Verify Python release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking GitHub Release: ${RELEASE_TAG}"
+
+          gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Download Python artifact from GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/python
+
+          echo "================================================"
+          echo "  Downloading Python artifact"
+          echo "================================================"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "  Pattern     : *.whl"
+          echo "  Destination : dist/python/"
+          echo "================================================"
+
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "*.whl" \
+            --dir dist/python/
+
+      - name: Verify downloaded Python artifact
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+          SHA: ${{ steps.ver.outputs.sha }}
+          BRANCH: ${{ steps.ver.outputs.branch }}
+          ENVIRONMENT_NAME: ${{ steps.ver.outputs.environment_name }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "  Python artifact verification"
+          echo "================================================"
+          echo "  Branch      : ${BRANCH}"
+          echo "  Environment : ${ENVIRONMENT_NAME}"
+          echo "  Version     : ${VERSION}"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "  SHA         : ${SHA}"
+          echo ""
+          echo "  Files downloaded:"
+          ls -lh dist/python/
+          echo ""
+
+          if ! ls dist/python/*.whl >/dev/null 2>&1; then
+            echo "ERROR: No Python .whl artifact downloaded."
+            exit 1
+          fi
+
+          echo "  Artifact name:"
+          ls dist/python/*.whl
+
+          echo ""
+          echo "  SHA256 checksum:"
+          sha256sum dist/python/*.whl
+
+          echo "================================================"
+          echo "  Python artifact downloaded successfully"
+          echo "  Same binary CI built, tested, scanned and released"
+          echo "  No rebuild performed after CI"
+          echo "================================================"
+
+      - name: Write Python download summary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+          SHA: ${{ steps.ver.outputs.sha }}
+          BRANCH: ${{ steps.ver.outputs.branch }}
+          ENVIRONMENT_NAME: ${{ steps.ver.outputs.environment_name }}
+        run: |
+          {
+            echo "## Python Artifact Download"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Source workflow | Python CI |"
+            echo "| Branch | ${BRANCH} |"
+            echo "| Environment | ${ENVIRONMENT_NAME} |"
+            echo "| SHA | ${SHA} |"
+            echo "| Version | ${VERSION} |"
+            echo "| Release tag | ${RELEASE_TAG} |"
+            echo "| Artifact type | Python wheel \`.whl\` |"
+            echo ""
+            echo "Downloaded files:"
+            echo ""
+            echo '```text'
+            ls -lh dist/python/
+            echo '```'
+            echo ""
+            echo "No rebuild was performed in this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  download-node-artifact:
+    name: Download Node Artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.name == 'Node - CI'
+      }}
+
+    steps:
+      - name: Show triggering CI run info
+        run: |
+          echo "================================================"
+          echo "  Artifact Download triggered by Node CI"
+          echo "================================================"
+          echo "  Workflow   : ${{ github.event.workflow_run.name }}"
+          echo "  Event      : ${{ github.event.workflow_run.event }}"
+          echo "  Conclusion : ${{ github.event.workflow_run.conclusion }}"
+          echo "  Branch     : ${{ github.event.workflow_run.head_branch }}"
+          echo "  SHA        : ${{ github.event.workflow_run.head_sha }}"
+          echo "  CI Run ID  : ${{ github.event.workflow_run.id }}"
+          echo "  Triggered  : ${{ github.event.workflow_run.created_at }}"
+          echo "================================================"
+
+      - name: Compute Node release tag
+        id: ver
+        env:
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${TRIGGER_SHA:0:7}"
+
+          case "${TRIGGER_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            prod)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported source branch: ${TRIGGER_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="node-${VERSION}"
+
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "environment_name=${ENVIRONMENT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${TRIGGER_SHA}" >> "$GITHUB_OUTPUT"
+          echo "branch=${TRIGGER_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "================================================"
+          echo "  Computed Node artifact version"
+          echo "================================================"
+          echo "  Branch      : ${TRIGGER_BRANCH}"
+          echo "  Environment : ${ENVIRONMENT_NAME}"
+          echo "  SHA         : ${TRIGGER_SHA}"
+          echo "  Short SHA   : ${SHORT_SHA}"
+          echo "  Version     : ${VERSION}"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "================================================"
+
+      - name: Verify Node release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking GitHub Release: ${RELEASE_TAG}"
+
+          gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Download Node artifact from GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/node
+
+          echo "================================================"
+          echo "  Downloading Node artifact"
+          echo "================================================"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "  Pattern     : *.tgz"
+          echo "  Destination : dist/node/"
+          echo "================================================"
+
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "*.tgz" \
+            --dir dist/node/
+
+          echo ""
+          echo "Attempting to download checksum file if present..."
+
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "SHA256SUMS.txt" \
+            --dir dist/node/ || true
+
+      - name: Verify downloaded Node artifact
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+          SHA: ${{ steps.ver.outputs.sha }}
+          BRANCH: ${{ steps.ver.outputs.branch }}
+          ENVIRONMENT_NAME: ${{ steps.ver.outputs.environment_name }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "  Node artifact verification"
+          echo "================================================"
+          echo "  Branch      : ${BRANCH}"
+          echo "  Environment : ${ENVIRONMENT_NAME}"
+          echo "  Version     : ${VERSION}"
+          echo "  Release tag : ${RELEASE_TAG}"
+          echo "  SHA         : ${SHA}"
+          echo ""
+          echo "  Files downloaded:"
+          ls -lh dist/node/
+          echo ""
+
+          if ! ls dist/node/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: No Node .tgz artifact downloaded."
+            exit 1
+          fi
+
+          echo "  Artifact name:"
+          ls dist/node/*.tgz
+
+          echo ""
+          echo "  SHA256 checksum:"
+          sha256sum dist/node/*.tgz
+
+          if [ -f dist/node/SHA256SUMS.txt ]; then
+            echo ""
+            echo "  Verifying checksum file from release:"
+            cd dist/node
+            sha256sum -c SHA256SUMS.txt
+          else
+            echo ""
+            echo "  Checksum file not found in release."
+            echo "  Local checksum was generated for visibility."
+          fi
+
+          echo "================================================"
+          echo "  Node artifact downloaded successfully"
+          echo "  Same binary CI built, tested, scanned and released"
+          echo "  No rebuild performed after CI"
+          echo "================================================"
+
+      - name: Write Node download summary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+          SHA: ${{ steps.ver.outputs.sha }}
+          BRANCH: ${{ steps.ver.outputs.branch }}
+          ENVIRONMENT_NAME: ${{ steps.ver.outputs.environment_name }}
+        run: |
+          {
+            echo "## Node Artifact Download"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Source workflow | Node - CI |"
+            echo "| Branch | ${BRANCH} |"
+            echo "| Environment | ${ENVIRONMENT_NAME} |"
+            echo "| SHA | ${SHA} |"
+            echo "| Version | ${VERSION} |"
+            echo "| Release tag | ${RELEASE_TAG} |"
+            echo "| Artifact type | npm package \`.tgz\` |"
+            echo ""
+            echo "Downloaded files:"
+            echo ""
+            echo '```text'
+            ls -lh dist/node/
+            echo '```'
+            echo ""
+            echo "No rebuild was performed in this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"

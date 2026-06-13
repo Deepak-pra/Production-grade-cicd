@@ -1,9 +1,11 @@
 name: Python CI
 
 on:
-  push:
+  pull_request:
     branches:
       - dev
+      - stage
+      - main
     paths:
       - "apps/python/**"
       - ".github/workflows/python-ci.yml"
@@ -173,7 +175,6 @@ jobs:
     name: Build Python App
     runs-on: ubuntu-latest
     needs: sonar
-    if: github.event_name == 'push'
     timeout-minutes: 10
 
     outputs:
@@ -226,7 +227,6 @@ jobs:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push'
     timeout-minutes: 10
 
     steps:
@@ -266,7 +266,6 @@ jobs:
     needs:
       - build
       - trivy
-    if: github.event_name == 'push'
     timeout-minutes: 10
 
     permissions:
