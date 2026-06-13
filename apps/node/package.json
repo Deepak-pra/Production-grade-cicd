@@ -14,8 +14,7 @@
   },
   "files": [
     "src/**/*",
-    "package.json",
-    "README.md"
+    "package.json"
   ],
   "dependencies": {},
   "devDependencies": {
