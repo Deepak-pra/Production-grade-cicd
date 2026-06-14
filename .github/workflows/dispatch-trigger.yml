@@ -27,6 +27,13 @@ on:
         type: string
         required: true
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   trigger-cd-repo:
     name: Trigger CD Repository
@@ -46,15 +53,24 @@ jobs:
           case "${APP_NAME}" in
             python)
               ARTIFACT_PATTERN="*.whl"
+              EXPECTED_PREFIX="python-1.0.0-${TARGET_ENVIRONMENT}-"
               ;;
             node)
               ARTIFACT_PATTERN="*.tgz"
+              EXPECTED_PREFIX="node-1.0.0-${TARGET_ENVIRONMENT}-"
               ;;
             *)
               echo "ERROR: Unsupported app_name: ${APP_NAME}"
               exit 1
               ;;
           esac
+
+          if [[ "${RELEASE_TAG}" != ${EXPECTED_PREFIX}* ]]; then
+            echo "ERROR: release_tag does not match selected app/environment."
+            echo "Expected prefix : ${EXPECTED_PREFIX}"
+            echo "Actual tag      : ${RELEASE_TAG}"
+            exit 1
+          fi
 
           echo "artifact_pattern=${ARTIFACT_PATTERN}" >> "$GITHUB_OUTPUT"
 
@@ -68,6 +84,20 @@ jobs:
           echo "  Artifact pattern   : ${ARTIFACT_PATTERN}"
           echo "  Triggered by       : ${{ github.actor }}"
           echo "=================================================="
+
+      - name: Verify release exists in CI repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking release exists in source repo:"
+          echo "Repo        : ${GITHUB_REPOSITORY}"
+          echo "Release tag : ${RELEASE_TAG}"
+
+          gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}"
 
       - name: Send repository_dispatch to CD repo
         env:
@@ -88,23 +118,53 @@ jobs:
 
           echo "Sending repository_dispatch to Deepak-pra/gha-training-cd"
 
-          curl -sS -X POST \
+          PAYLOAD="$(jq -n \
+            --arg event_type "ci-artifact-ready" \
+            --arg app_name "${APP_NAME}" \
+            --arg target_environment "${TARGET_ENVIRONMENT}" \
+            --arg source_repo "${SOURCE_REPO}" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg artifact_pattern "${ARTIFACT_PATTERN}" \
+            --arg triggered_by "${TRIGGERED_BY}" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                app_name: $app_name,
+                target_environment: $target_environment,
+                source_repo: $source_repo,
+                release_tag: $release_tag,
+                artifact_pattern: $artifact_pattern,
+                triggered_by: $triggered_by
+              }
+            }'
+          )"
+
+          echo "Dispatch payload:"
+          echo "${PAYLOAD}"
+
+          curl -fsS -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${DISPATCH_PAT}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/Deepak-pra/gha-training-cd/dispatches \
-            -d @- <<EOF
-          {
-            "event_type": "ci-artifact-ready",
-            "client_payload": {
-              "app_name": "${APP_NAME}",
-              "target_environment": "${TARGET_ENVIRONMENT}",
-              "source_repo": "${SOURCE_REPO}",
-              "release_tag": "${RELEASE_TAG}",
-              "artifact_pattern": "${ARTIFACT_PATTERN}",
-              "triggered_by": "${TRIGGERED_BY}"
-            }
-          }
-          EOF
+            -d "${PAYLOAD}"
 
           echo "repository_dispatch sent successfully."
+
+      - name: Write dispatch summary
+        run: |
+          {
+            echo "## Repository Dispatch Sent"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| App | ${{ inputs.app_name }} |"
+            echo "| Target environment | ${{ inputs.target_environment }} |"
+            echo "| Source repo | ${{ github.repository }} |"
+            echo "| Release tag | ${{ inputs.release_tag }} |"
+            echo "| Artifact pattern | ${{ steps.meta.outputs.artifact_pattern }} |"
+            echo "| Target repo | Deepak-pra/gha-training-cd |"
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo ""
+            echo "Repo 2 was triggered using repository_dispatch."
+          } >> "$GITHUB_STEP_SUMMARY"
