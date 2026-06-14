@@ -56,7 +56,7 @@ const deploymentInfo = {
   short_sha: shortSha,
   artifact_type: artifactType,
   deployment_target: deploymentTarget,
-  note: "This file is generated during CI. CD workflow may overwrite or enrich it with environment-specific deployment metadata.",
+  note: "Generated during CI. CD workflow can enrich this with environment-specific deployment metadata.",
   generated_at: buildTime
 };
 
@@ -144,6 +144,7 @@ const stylesCss = `:root {
   --muted: #6b7c99;
   --blue: #0055cc;
   --green: #007a60;
+  --purple: #5a3fa0;
   --line: #d6e2f0;
 }
 
@@ -246,7 +247,7 @@ h1 {
 }
 
 .links a:nth-child(3) {
-  background: #5a3fa0;
+  background: var(--purple);
 }
 
 @media (max-width: 720px) {
@@ -270,6 +271,7 @@ fs.writeFileSync(path.join(webDir, "deployment-info.json"), JSON.stringify(deplo
 console.log("Static web build completed.");
 console.log(`Output directory: ${webDir}`);
 console.log("Generated files:");
+
 for (const file of fs.readdirSync(webDir)) {
   console.log(`- ${file}`);
 }

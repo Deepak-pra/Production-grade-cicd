@@ -19,9 +19,6 @@
   ],
   "author": "ShipFast Training",
   "license": "MIT",
-  "dependencies": {
-    "express": "^4.18.2"
-  },
   "devDependencies": {
     "eslint": "^8.57.0",
     "jest": "^29.7.0"
