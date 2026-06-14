@@ -1,4 +1,4 @@
-name: Node - CI
+name: Node CI
 
 on:
   pull_request:
@@ -18,9 +18,56 @@ defaults:
     shell: bash
 
 jobs:
-  lint:
-    name: Lint (eslint)
+  validate:
+    name: Validate Node Project
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required Node files
+        run: |
+          required_files=(
+            "apps/node/package.json"
+            "apps/node/package-lock.json"
+            "apps/node/.eslintrc.json"
+            "apps/node/sonar-project.properties"
+            "apps/node/src/utils.js"
+            "apps/node/src/pipeline.js"
+            "apps/node/src/server.js"
+            "apps/node/__tests__/utils.test.js"
+            "apps/node/__tests__/pipeline.test.js"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required Node files are present."
+
+      - name: Validate package-lock.json is committed
+        run: |
+          if [ ! -f apps/node/package-lock.json ]; then
+            echo "ERROR: apps/node/package-lock.json is missing."
+            echo "Production-grade CI requires package-lock.json to be committed."
+            echo "Run locally:"
+            echo "cd apps/node && npm install"
+            echo "Then commit apps/node/package-lock.json."
+            exit 1
+          fi
+
+          echo "package-lock.json found:"
+          ls -lh apps/node/package-lock.json
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: validate
     timeout-minutes: 5
 
     steps:
@@ -48,8 +95,9 @@ jobs:
           npm run lint
 
   unit-test:
-    name: Unit Test (jest)
+    name: Unit Test
     runs-on: ubuntu-latest
+    needs: validate
     timeout-minutes: 10
 
     steps:
@@ -91,8 +139,9 @@ jobs:
           if-no-files-found: error
 
   integration-test:
-    name: Integration Test (jest)
+    name: Integration Test
     runs-on: ubuntu-latest
+    needs: validate
     timeout-minutes: 10
 
     steps:
@@ -136,6 +185,7 @@ jobs:
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
+    needs: validate
     timeout-minutes: 10
 
     steps:
@@ -181,11 +231,20 @@ jobs:
   build:
     name: Build Node App
     runs-on: ubuntu-latest
-    needs: [ lint, unit-test, integration-test, sonar ]
+    needs:
+      - lint
+      - unit-test
+      - integration-test
+      - sonar
     timeout-minutes: 10
 
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      environment_name: ${{ steps.version.outputs.environment_name }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      pr_head_sha: ${{ steps.version.outputs.pr_head_sha }}
+      pr_base_branch: ${{ steps.version.outputs.pr_base_branch }}
 
     steps:
       - name: Checkout repository
@@ -201,16 +260,49 @@ jobs:
           node --version
           npm --version
 
-      - name: Compute version
+      - name: Compute PR-based Node version
         id: version
         run: |
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          VERSION="1.0.0-dev-${SHORT_SHA}"
+          set -euo pipefail
+
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
+
+          case "${PR_BASE_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported PR target branch: ${PR_BASE_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="node-${VERSION}"
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "environment_name=${ENVIRONMENT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_base_branch=${PR_BASE_BRANCH}" >> "$GITHUB_OUTPUT"
+
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
 
           echo "Computed Node version: ${VERSION}"
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "PR base branch: ${PR_BASE_BRANCH}"
+          echo "PR head SHA: ${PR_HEAD_SHA}"
 
       - name: Install dependencies
         working-directory: apps/node
@@ -236,11 +328,21 @@ jobs:
           echo "Node package generated successfully:"
           ls -lh dist/*.tgz
 
-      - name: Upload Node build artifact
+      - name: Generate artifact checksum
+        working-directory: apps/node
+        run: |
+          sha256sum dist/*.tgz > dist/SHA256SUMS.txt
+
+          echo "Generated checksum:"
+          cat dist/SHA256SUMS.txt
+
+      - name: Upload Node build artifact to workflow run
         uses: actions/upload-artifact@v4
         with:
-          name: node-dist-${{ github.sha }}
-          path: apps/node/dist/*.tgz
+          name: node-dist-${{ github.event.pull_request.head.sha }}
+          path: |
+            apps/node/dist/*.tgz
+            apps/node/dist/SHA256SUMS.txt
           retention-days: 7
           if-no-files-found: error
 
@@ -257,7 +359,7 @@ jobs:
       - name: Download Node build artifact
         uses: actions/download-artifact@v4
         with:
-          name: node-dist-${{ github.sha }}
+          name: node-dist-${{ needs.build.outputs.pr_head_sha }}
           path: apps/node/dist/
 
       - name: Show Node artifact before scan
@@ -277,9 +379,6 @@ jobs:
           if [ ! -f apps/node/package-lock.json ]; then
             echo "ERROR: apps/node/package-lock.json is missing."
             echo "Production-grade CI requires package-lock.json to be committed."
-            echo "Run locally:"
-            echo "cd apps/node && npm install"
-            echo "Then commit apps/node/package-lock.json."
             exit 1
           fi
 
@@ -305,7 +404,7 @@ jobs:
           ignore-unfixed: false
 
   release:
-    name: Publish to GitHub Releases
+    name: Publish Node Artifact to GitHub Release
     runs-on: ubuntu-latest
     needs:
       - build
@@ -319,7 +418,7 @@ jobs:
       - name: Download Node build artifact
         uses: actions/download-artifact@v4
         with:
-          name: node-dist-${{ github.sha }}
+          name: node-dist-${{ needs.build.outputs.pr_head_sha }}
           path: dist/
 
       - name: Show release artifact
@@ -327,22 +426,25 @@ jobs:
           echo "Artifact to publish:"
           ls -lh dist/
 
-      - name: Publish Node artifact to GitHub Releases
+      - name: Publish Node artifact to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          ENVIRONMENT_NAME: ${{ needs.build.outputs.environment_name }}
+          PR_HEAD_SHA: ${{ needs.build.outputs.pr_head_sha }}
+          PR_BASE_BRANCH: ${{ needs.build.outputs.pr_base_branch }}
         run: |
           set -euo pipefail
 
-          RELEASE_TAG="node-${VERSION}"
-
           echo "=================================================="
-          echo "Publishing Node artifact to GitHub Releases"
+          echo "Publishing Node artifact to GitHub Release"
           echo "=================================================="
+          echo "Environment : ${ENVIRONMENT_NAME}"
           echo "Version     : ${VERSION}"
           echo "Release tag : ${RELEASE_TAG}"
-          echo "Branch      : ${GITHUB_REF_NAME}"
-          echo "SHA         : ${GITHUB_SHA}"
+          echo "PR base     : ${PR_BASE_BRANCH}"
+          echo "PR head SHA : ${PR_HEAD_SHA}"
           echo "Artifact:"
           ls -lh dist/
           echo "=================================================="
@@ -352,18 +454,23 @@ jobs:
             exit 1
           fi
 
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists. Uploading asset with clobber."
+          if ! ls dist/SHA256SUMS.txt >/dev/null 2>&1; then
+            echo "ERROR: No checksum file found for release."
+            exit 1
+          fi
 
-            gh release upload "${RELEASE_TAG}" dist/*.tgz \
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists. Uploading assets with clobber."
+
+            gh release upload "${RELEASE_TAG}" dist/*.tgz dist/SHA256SUMS.txt \
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
           else
             echo "Creating new release ${RELEASE_TAG}."
 
-            gh release create "${RELEASE_TAG}" dist/*.tgz \
+            gh release create "${RELEASE_TAG}" dist/*.tgz dist/SHA256SUMS.txt \
               --repo "${GITHUB_REPOSITORY}" \
               --title "Node Build ${VERSION}" \
-              --notes "Node artifact built from ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}" \
+              --notes "Node artifact built from PR head SHA ${PR_HEAD_SHA}, target branch ${PR_BASE_BRANCH}, environment ${ENVIRONMENT_NAME}" \
               --prerelease
           fi
