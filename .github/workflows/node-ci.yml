@@ -331,10 +331,11 @@ jobs:
       - name: Generate artifact checksum
         working-directory: apps/node
         run: |
-          sha256sum dist/*.tgz > dist/SHA256SUMS.txt
+          cd dist
+          sha256sum *.tgz > SHA256SUMS.txt
 
           echo "Generated checksum:"
-          cat dist/SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Upload Node build artifact to workflow run
         uses: actions/upload-artifact@v4
