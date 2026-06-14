@@ -4,28 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       app_name:
-        description: "Application artifact to dispatch"
+        description: "Application to validate and dispatch"
         type: choice
         options:
           - python
           - node
         required: true
         default: node
-
-      target_environment:
-        description: "Target environment"
-        type: choice
-        options:
-          - dev
-          - stage
-          - prod
-        required: true
-        default: dev
-
-      release_tag:
-        description: "Exact GitHub Release tag created by CI, example: node-1.0.0-dev-abc1234"
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -35,29 +20,217 @@ defaults:
     shell: bash
 
 jobs:
-  trigger-cd-repo:
-    name: Trigger CD Repository
+  ci-and-dispatch:
+    name: CI Checks and Dispatch to Build Repo
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
 
     steps:
-      - name: Compute dispatch payload
-        id: meta
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Show dispatch trigger context
+        run: |
+          echo "=================================================="
+          echo "  Dispatch Trigger Started"
+          echo "=================================================="
+          echo "  Selected app : ${{ inputs.app_name }}"
+          echo "  Source repo  : ${{ github.repository }}"
+          echo "  Source ref   : ${{ github.ref_name }}"
+          echo "  Source SHA   : ${{ github.sha }}"
+          echo "  Triggered by : ${{ github.actor }}"
+          echo "=================================================="
+
+      # ------------------------------------------------------------
+      # Node.js CI checks
+      # ------------------------------------------------------------
+
+      - name: Validate Node project files
+        if: ${{ inputs.app_name == 'node' }}
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "apps/node/package.json"
+            "apps/node/package-lock.json"
+            "apps/node/.eslintrc.json"
+            "apps/node/src/utils.js"
+            "apps/node/src/pipeline.js"
+            "apps/node/src/server.js"
+            "apps/node/__tests__/utils.test.js"
+            "apps/node/__tests__/pipeline.test.js"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required Node file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "Node project validation passed."
+
+      - name: Set up Node.js
+        if: ${{ inputs.app_name == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Show Node and npm versions
+        if: ${{ inputs.app_name == 'node' }}
+        run: |
+          node --version
+          npm --version
+
+      - name: Install Node dependencies
+        if: ${{ inputs.app_name == 'node' }}
+        working-directory: apps/node
+        run: |
+          npm ci
+
+      - name: Run Node lint
+        if: ${{ inputs.app_name == 'node' }}
+        working-directory: apps/node
+        run: |
+          npm run lint
+
+      - name: Run Node unit tests
+        if: ${{ inputs.app_name == 'node' }}
+        working-directory: apps/node
+        run: |
+          npx jest __tests__/utils.test.js --coverage
+
+      - name: Run Node integration tests
+        if: ${{ inputs.app_name == 'node' }}
+        working-directory: apps/node
+        run: |
+          npx jest __tests__/pipeline.test.js --coverage
+
+      - name: Run Node Trivy dependency scan
+        if: ${{ inputs.app_name == 'node' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        env:
+          TRIVY_INCLUDE_DEV_DEPS: "true"
+        with:
+          scan-type: fs
+          scan-ref: apps/node/package-lock.json
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+      # ------------------------------------------------------------
+      # Python CI checks
+      # ------------------------------------------------------------
+
+      - name: Validate Python project files
+        if: ${{ inputs.app_name == 'python' }}
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "apps/python/app.py"
+            "apps/python/calculator.py"
+            "apps/python/pipeline.py"
+            "apps/python/pyproject.toml"
+            "apps/python/requirements.txt"
+            "apps/python/requirements-dev.txt"
+            "apps/python/.flake8"
+            "apps/python/tests/test_calculator.py"
+            "apps/python/tests/test_pipeline.py"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required Python file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "Python project validation passed."
+
+      - name: Set up Python
+        if: ${{ inputs.app_name == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate Python pyproject.toml
+        if: ${{ inputs.app_name == 'python' }}
+        working-directory: apps/python
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          tomllib.loads(Path("pyproject.toml").read_text())
+          print("pyproject.toml is valid TOML")
+          PY
+
+      - name: Install Python dependencies
+        if: ${{ inputs.app_name == 'python' }}
+        working-directory: apps/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Python lint
+        if: ${{ inputs.app_name == 'python' }}
+        working-directory: apps/python
+        run: |
+          flake8 . --config .flake8
+
+      - name: Run Python unit tests
+        if: ${{ inputs.app_name == 'python' }}
+        working-directory: apps/python
+        run: |
+          pytest tests/test_calculator.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Run Python integration tests
+        if: ${{ inputs.app_name == 'python' }}
+        working-directory: apps/python
+        run: |
+          pytest tests/test_pipeline.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Run Python Trivy dependency scan
+        if: ${{ inputs.app_name == 'python' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: apps/python/requirements.txt
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+      # ------------------------------------------------------------
+      # Repository dispatch to Repo 2
+      # ------------------------------------------------------------
+
+      - name: Prepare repository dispatch payload
+        id: payload
         run: |
           set -euo pipefail
 
           APP_NAME="${{ inputs.app_name }}"
-          TARGET_ENVIRONMENT="${{ inputs.target_environment }}"
-          RELEASE_TAG="${{ inputs.release_tag }}"
 
           case "${APP_NAME}" in
-            python)
-              ARTIFACT_PATTERN="*.whl"
-              EXPECTED_PREFIX="python-1.0.0-${TARGET_ENVIRONMENT}-"
-              ;;
             node)
-              ARTIFACT_PATTERN="*.tgz"
-              EXPECTED_PREFIX="node-1.0.0-${TARGET_ENVIRONMENT}-"
+              BUILD_COMMAND="npm"
+              ARTIFACT_TYPE="tgz"
+              ;;
+            python)
+              BUILD_COMMAND="python"
+              ARTIFACT_TYPE="whl"
               ;;
             *)
               echo "ERROR: Unsupported app_name: ${APP_NAME}"
@@ -65,48 +238,28 @@ jobs:
               ;;
           esac
 
-          if [[ "${RELEASE_TAG}" != ${EXPECTED_PREFIX}* ]]; then
-            echo "ERROR: release_tag does not match selected app/environment."
-            echo "Expected prefix : ${EXPECTED_PREFIX}"
-            echo "Actual tag      : ${RELEASE_TAG}"
-            exit 1
-          fi
-
-          echo "artifact_pattern=${ARTIFACT_PATTERN}" >> "$GITHUB_OUTPUT"
+          echo "build_command=${BUILD_COMMAND}" >> "$GITHUB_OUTPUT"
+          echo "artifact_type=${ARTIFACT_TYPE}" >> "$GITHUB_OUTPUT"
 
           echo "=================================================="
           echo "  Repository Dispatch Payload"
           echo "=================================================="
-          echo "  App name           : ${APP_NAME}"
-          echo "  Target environment : ${TARGET_ENVIRONMENT}"
-          echo "  Source repo        : ${{ github.repository }}"
-          echo "  Release tag        : ${RELEASE_TAG}"
-          echo "  Artifact pattern   : ${ARTIFACT_PATTERN}"
-          echo "  Triggered by       : ${{ github.actor }}"
+          echo "  App name      : ${APP_NAME}"
+          echo "  Source repo   : ${{ github.repository }}"
+          echo "  Source ref    : ${{ github.ref_name }}"
+          echo "  Source SHA    : ${{ github.sha }}"
+          echo "  Artifact type : ${ARTIFACT_TYPE}"
+          echo "  Triggered by  : ${{ github.actor }}"
           echo "=================================================="
 
-      - name: Verify release exists in CI repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          echo "Checking release exists in source repo:"
-          echo "Repo        : ${GITHUB_REPOSITORY}"
-          echo "Release tag : ${RELEASE_TAG}"
-
-          gh release view "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}"
-
-      - name: Send repository_dispatch to CD repo
+      - name: Send repository_dispatch to build repository
         env:
           DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
           APP_NAME: ${{ inputs.app_name }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           SOURCE_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          ARTIFACT_PATTERN: ${{ steps.meta.outputs.artifact_pattern }}
+          SOURCE_REF: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+          ARTIFACT_TYPE: ${{ steps.payload.outputs.artifact_type }}
           TRIGGERED_BY: ${{ github.actor }}
         run: |
           set -euo pipefail
@@ -116,31 +269,32 @@ jobs:
             exit 1
           fi
 
-          echo "Sending repository_dispatch to Deepak-pra/gha-training-cd"
-
           PAYLOAD="$(jq -n \
-            --arg event_type "ci-artifact-ready" \
+            --arg event_type "build-requested" \
             --arg app_name "${APP_NAME}" \
-            --arg target_environment "${TARGET_ENVIRONMENT}" \
             --arg source_repo "${SOURCE_REPO}" \
-            --arg release_tag "${RELEASE_TAG}" \
-            --arg artifact_pattern "${ARTIFACT_PATTERN}" \
+            --arg source_ref "${SOURCE_REF}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg artifact_type "${ARTIFACT_TYPE}" \
             --arg triggered_by "${TRIGGERED_BY}" \
             '{
               event_type: $event_type,
               client_payload: {
                 app_name: $app_name,
-                target_environment: $target_environment,
                 source_repo: $source_repo,
-                release_tag: $release_tag,
-                artifact_pattern: $artifact_pattern,
+                source_ref: $source_ref,
+                source_sha: $source_sha,
+                artifact_type: $artifact_type,
                 triggered_by: $triggered_by
               }
             }'
           )"
 
-          echo "Dispatch payload:"
+          echo "=================================================="
+          echo "  Sending repository_dispatch to Repo 2"
+          echo "=================================================="
           echo "${PAYLOAD}"
+          echo "=================================================="
 
           curl -fsS -X POST \
             -H "Accept: application/vnd.github+json" \
@@ -158,13 +312,13 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| App | ${{ inputs.app_name }} |"
-            echo "| Target environment | ${{ inputs.target_environment }} |"
+            echo "| Selected app | ${{ inputs.app_name }} |"
             echo "| Source repo | ${{ github.repository }} |"
-            echo "| Release tag | ${{ inputs.release_tag }} |"
-            echo "| Artifact pattern | ${{ steps.meta.outputs.artifact_pattern }} |"
+            echo "| Source ref | ${{ github.ref_name }} |"
+            echo "| Source SHA | ${{ github.sha }} |"
             echo "| Target repo | Deepak-pra/gha-training-cd |"
+            echo "| Event type | build-requested |"
             echo "| Triggered by | ${{ github.actor }} |"
             echo ""
-            echo "Repo 2 was triggered using repository_dispatch."
+            echo "Repo 2 has been triggered to build the selected app from the exact source SHA."
           } >> "$GITHUB_STEP_SUMMARY"
