@@ -117,7 +117,7 @@ jobs:
           gh release download "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern "SHA256SUMS.txt" \
-            --dir downloaded/python/ || true
+            --dir downloaded/python/
 
       - name: Verify downloaded Python artifact
         run: |
@@ -131,12 +131,18 @@ jobs:
             exit 1
           fi
 
+          if [ ! -f downloaded/python/SHA256SUMS.txt ]; then
+            echo "ERROR: SHA256SUMS.txt was not downloaded."
+            exit 1
+          fi
+
+          echo "Local checksum:"
           sha256sum downloaded/python/*.whl
 
-          if [ -f downloaded/python/SHA256SUMS.txt ]; then
-            cd downloaded/python
-            sha256sum -c SHA256SUMS.txt
-          fi
+          echo ""
+          echo "Verifying Python checksum file:"
+          cd downloaded/python
+          sha256sum -c SHA256SUMS.txt
 
           echo "Python artifact downloaded from GitHub Release successfully."
           echo "No rebuild performed."
@@ -157,7 +163,7 @@ jobs:
       - name: Show triggering Node CI run info
         run: |
           echo "================================================"
-          echo "  Artifact Download triggered by Node - CI"
+          echo "  Artifact Download triggered by Node CI"
           echo "================================================"
           echo "  Workflow   : ${{ github.event.workflow_run.name }}"
           echo "  Event      : ${{ github.event.workflow_run.event }}"
@@ -217,7 +223,7 @@ jobs:
 
           echo "Computed Node release tag: ${RELEASE_TAG}"
 
-      - name: Download Node artifact from GitHub Release
+      - name: Download Node artifacts from GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
@@ -229,17 +235,25 @@ jobs:
           gh release view "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}"
 
+          echo "Downloading Node package artifact:"
           gh release download "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern "*.tgz" \
             --dir downloaded/node/
 
+          echo "Downloading Node S3 static web artifact:"
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "node-web-*.zip" \
+            --dir downloaded/node/
+
+          echo "Downloading checksum file:"
           gh release download "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern "SHA256SUMS.txt" \
-            --dir downloaded/node/ || true
+            --dir downloaded/node/
 
-      - name: Verify downloaded Node artifact
+      - name: Verify downloaded Node artifacts
         run: |
           set -euo pipefail
 
@@ -251,12 +265,27 @@ jobs:
             exit 1
           fi
 
-          sha256sum downloaded/node/*.tgz
-
-          if [ -f downloaded/node/SHA256SUMS.txt ]; then
-            cd downloaded/node
-            sha256sum -c SHA256SUMS.txt
+          if ! ls downloaded/node/node-web-*.zip >/dev/null 2>&1; then
+            echo "ERROR: No Node static web node-web-*.zip artifact downloaded."
+            exit 1
           fi
 
-          echo "Node artifact downloaded from GitHub Release successfully."
+          if [ ! -f downloaded/node/SHA256SUMS.txt ]; then
+            echo "ERROR: SHA256SUMS.txt was not downloaded."
+            exit 1
+          fi
+
+          echo "Local checksums:"
+          sha256sum downloaded/node/*.tgz
+          sha256sum downloaded/node/node-web-*.zip
+
+          echo ""
+          echo "Verifying Node checksum file:"
+          cd downloaded/node
+          sha256sum -c SHA256SUMS.txt
+
+          echo "Node artifacts downloaded from GitHub Release successfully."
+          echo "Downloaded artifacts:"
+          echo "- Node package artifact: .tgz"
+          echo "- Node S3 static web artifact: node-web-*.zip"
           echo "No rebuild performed."
