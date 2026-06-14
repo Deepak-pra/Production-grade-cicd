@@ -1,4 +1,4 @@
-name: Node CI
+name: Node - CI
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ jobs:
   validate:
     name: Validate Node Project
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -331,10 +331,11 @@ jobs:
       - name: Generate artifact checksum
         working-directory: apps/node
         run: |
-          sha256sum dist/*.tgz > dist/SHA256SUMS.txt
+          cd dist
+          sha256sum *.tgz > SHA256SUMS.txt
 
           echo "Generated checksum:"
-          cat dist/SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Upload Node build artifact to workflow run
         uses: actions/upload-artifact@v4
