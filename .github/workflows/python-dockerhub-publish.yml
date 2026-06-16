@@ -3,6 +3,15 @@ name: Python Docker Hub Publish
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "GitHub Environment containing Docker Hub secrets"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
       image_tag:
         description: "Docker image tag"
         required: true
@@ -22,17 +31,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    environment: ${{ inputs.target_environment }}
+
     env:
-      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/shipfast-python
+      IMAGE_REPOSITORY: shipfast-python
       IMAGE_TAG: ${{ inputs.image_tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show Docker image details
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
+            echo "Check GitHub Environment secrets for the selected environment."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
+            echo "Check GitHub Environment secrets for the selected environment."
+            exit 1
+          fi
+
+          echo "Docker Hub secrets are available."
+
+      - name: Set Docker image name
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
 
           echo "Image name : ${IMAGE_NAME}"
           echo "Image tag  : ${IMAGE_TAG}"
@@ -61,6 +99,7 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
+            echo "| GitHub Environment | ${{ inputs.target_environment }} |"
             echo "| Registry | Docker Hub |"
             echo "| Image | ${IMAGE_NAME} |"
             echo "| Tag | ${IMAGE_TAG} |"
