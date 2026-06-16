@@ -1,0 +1,80 @@
+name: Python Docker Hub Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag"
+        required: true
+        default: "dev"
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-push:
+    name: Build and Push Python Image to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/shipfast-python
+      IMAGE_TAG: ${{ inputs.image_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Docker image details
+        run: |
+          set -euo pipefail
+
+          echo "Image name : ${IMAGE_NAME}"
+          echo "Image tag  : ${IMAGE_TAG}"
+          echo "Full image : ${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/python
+          file: apps/python/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Write Docker Hub publish summary
+        run: |
+          {
+            echo "## Python Docker Hub Publish Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Registry | Docker Hub |"
+            echo "| Image | ${IMAGE_NAME} |"
+            echo "| Tag | ${IMAGE_TAG} |"
+            echo "| Latest tag updated | yes |"
+            echo ""
+            echo "### Pull Command"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo '```'
+            echo ""
+            echo "### Run Command"
+            echo ""
+            echo '```bash'
+            echo "docker run --rm -p 8000:8000 ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
