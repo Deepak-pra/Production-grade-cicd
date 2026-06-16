@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
   id-token: write
 
 defaults:
@@ -18,205 +17,25 @@ defaults:
     shell: bash
 
 jobs:
-  resolve-release:
-    name: Resolve Exact Node CI Release
+  deploy:
+    name: Deploy to Private S3
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    outputs:
-      environment_name: ${{ steps.resolve.outputs.environment_name }}
-      branch_name: ${{ steps.resolve.outputs.branch_name }}
-      pr_number: ${{ steps.resolve.outputs.pr_number }}
-      pr_base_branch: ${{ steps.resolve.outputs.pr_base_branch }}
-      pr_head_sha: ${{ steps.resolve.outputs.pr_head_sha }}
-      short_sha: ${{ steps.resolve.outputs.short_sha }}
-      version: ${{ steps.resolve.outputs.version }}
-      release_tag: ${{ steps.resolve.outputs.release_tag }}
-
-    steps:
-      - name: Resolve merged PR and matching Node CI release
-        id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          BRANCH_NAME: ${{ github.ref_name }}
-          PUSH_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          echo "=================================================="
-          echo "Resolving exact Node CI release for CD"
-          echo "=================================================="
-          echo "Repository : ${REPO}"
-          echo "Branch     : ${BRANCH_NAME}"
-          echo "Push SHA   : ${PUSH_SHA}"
-          echo "=================================================="
-
-          case "${BRANCH_NAME}" in
-            dev)
-              ENVIRONMENT_NAME="dev"
-              ;;
-            *)
-              echo "ERROR: Unsupported branch for current DEV-only Node CD: ${BRANCH_NAME}"
-              echo "Allowed branch for today's demo: dev"
-              exit 1
-              ;;
-          esac
-
-          echo "Mapped environment: ${ENVIRONMENT_NAME}"
-
-          echo ""
-          echo "Finding PR associated with push commit..."
-
-          ASSOCIATED_PRS="$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${REPO}/commits/${PUSH_SHA}/pulls")"
-
-          PR_COUNT="$(echo "${ASSOCIATED_PRS}" | jq 'length')"
-
-          if [ "${PR_COUNT}" -eq 0 ]; then
-            echo "ERROR: No associated PR found for push commit ${PUSH_SHA}."
-            echo ""
-            echo "This CD workflow expects Node changes to enter dev through a PR merge."
-            echo "Direct push is not supported because CD must deploy the exact CI release created from the PR head SHA."
-            exit 1
-          fi
-
-          PR_NUMBER="$(echo "${ASSOCIATED_PRS}" | jq -r --arg branch "${BRANCH_NAME}" '[.[] | select(.base.ref == $branch)] | .[0].number // empty')"
-
-          if [ -z "${PR_NUMBER}" ]; then
-            echo "ERROR: Associated PR found, but none targeting branch ${BRANCH_NAME}."
-            echo "Associated PR payload:"
-            echo "${ASSOCIATED_PRS}" | jq .
-            exit 1
-          fi
-
-          echo "Resolved PR number: ${PR_NUMBER}"
-
-          PR_BASE_BRANCH="$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json baseRefName --jq '.baseRefName')"
-          PR_HEAD_SHA="$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json headRefOid --jq '.headRefOid')"
-
-          if [ -z "${PR_BASE_BRANCH}" ] || [ -z "${PR_HEAD_SHA}" ]; then
-            echo "ERROR: Failed to resolve PR base branch or PR head SHA."
-            exit 1
-          fi
-
-          if [ "${PR_BASE_BRANCH}" != "${BRANCH_NAME}" ]; then
-            echo "ERROR: PR base branch does not match push branch."
-            echo "Push branch : ${BRANCH_NAME}"
-            echo "PR base     : ${PR_BASE_BRANCH}"
-            exit 1
-          fi
-
-          SHORT_SHA="${PR_HEAD_SHA:0:7}"
-
-          # Must match Node CI exactly:
-          # VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
-          # RELEASE_TAG="node-${VERSION}"
-          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
-          RELEASE_TAG="node-${VERSION}"
-
-          echo ""
-          echo "=================================================="
-          echo "Resolved exact Node CI release"
-          echo "=================================================="
-          echo "Environment    : ${ENVIRONMENT_NAME}"
-          echo "PR number      : ${PR_NUMBER}"
-          echo "PR base branch : ${PR_BASE_BRANCH}"
-          echo "PR head SHA    : ${PR_HEAD_SHA}"
-          echo "Short SHA      : ${SHORT_SHA}"
-          echo "Version        : ${VERSION}"
-          echo "Release tag    : ${RELEASE_TAG}"
-          echo "=================================================="
-
-          echo "environment_name=${ENVIRONMENT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "branch_name=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "pr_base_branch=${PR_BASE_BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "pr_head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify exact GitHub Release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          echo "=================================================="
-          echo "Verifying exact GitHub Release assets"
-          echo "=================================================="
-          echo "Release tag: ${RELEASE_TAG}"
-          echo "=================================================="
-
-          gh release view "${RELEASE_TAG}" --repo "${REPO}"
-
-          ASSETS="$(gh release view "${RELEASE_TAG}" \
-            --repo "${REPO}" \
-            --json assets \
-            --jq '.assets[].name')"
-
-          echo "Release assets:"
-          echo "${ASSETS}"
-
-          if ! echo "${ASSETS}" | grep -q '^node-web-.*\.zip$'; then
-            echo "ERROR: Required node-web-*.zip asset not found in release ${RELEASE_TAG}."
-            exit 1
-          fi
-
-          if ! echo "${ASSETS}" | grep -q '^SHA256SUMS.txt$'; then
-            echo "ERROR: Required SHA256SUMS.txt asset not found in release ${RELEASE_TAG}."
-            exit 1
-          fi
-
-          echo "Exact Node CI release assets are present."
-
-  deploy-node-private-s3:
-    name: Deploy Node Artifact to Private DEV S3
-    runs-on: ubuntu-latest
-    needs: resolve-release
+    environment: dev
     timeout-minutes: 15
 
-    environment: ${{ needs.resolve-release.outputs.environment_name }}
-
     concurrency:
-      group: node-s3-${{ needs.resolve-release.outputs.environment_name }}
+      group: node-private-s3-dev
       cancel-in-progress: false
 
     steps:
-      - name: Show deployment context
-        env:
-          ENVIRONMENT_NAME: ${{ needs.resolve-release.outputs.environment_name }}
-          BRANCH_NAME: ${{ needs.resolve-release.outputs.branch_name }}
-          PR_NUMBER: ${{ needs.resolve-release.outputs.pr_number }}
-          PR_HEAD_SHA: ${{ needs.resolve-release.outputs.pr_head_sha }}
-          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+      - name: Set deployment values
         run: |
           set -euo pipefail
 
-          echo "=================================================="
-          echo "Node Private S3 CD Deployment"
-          echo "=================================================="
-          echo "Branch          : ${BRANCH_NAME}"
-          echo "Environment     : ${ENVIRONMENT_NAME}"
-          echo "PR number       : ${PR_NUMBER}"
-          echo "PR head SHA     : ${PR_HEAD_SHA}"
-          echo "Release tag     : ${RELEASE_TAG}"
-          echo "AWS region      : ${AWS_REGION}"
-          echo "S3 bucket       : ${NODE_S3_BUCKET}"
-          echo "S3 prefix       : ${NODE_S3_PREFIX}"
-          echo "Triggered by    : ${{ github.actor }}"
-          echo "Push commit SHA : ${{ github.sha }}"
-          echo "External URL    : Not applicable - private S3 deployment"
-          echo "=================================================="
+          echo "ENVIRONMENT_NAME=dev" >> "$GITHUB_ENV"
+          echo "RELEASE_PREFIX=node-1.0.0-dev-" >> "$GITHUB_ENV"
 
-      - name: Validate required GitHub environment variables
+      - name: Validate environment variables
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -225,59 +44,45 @@ jobs:
         run: |
           set -euo pipefail
 
-          missing=0
+          test -n "${AWS_REGION}"
+          test -n "${AWS_ROLE_ARN}"
+          test -n "${NODE_S3_BUCKET}"
+          test -n "${NODE_S3_PREFIX}"
 
-          if [ -z "${AWS_REGION}" ]; then
-            echo "ERROR: AWS_REGION environment variable is missing."
-            missing=1
-          fi
+          echo "Environment variables are available."
+          echo "S3 bucket: ${NODE_S3_BUCKET}"
+          echo "S3 prefix: ${NODE_S3_PREFIX}"
 
-          if [ -z "${AWS_ROLE_ARN}" ]; then
-            echo "ERROR: AWS_ROLE_ARN environment variable is missing."
-            missing=1
-          fi
-
-          if [ -z "${NODE_S3_BUCKET}" ]; then
-            echo "ERROR: NODE_S3_BUCKET environment variable is missing."
-            missing=1
-          fi
-
-          if [ -z "${NODE_S3_PREFIX}" ]; then
-            echo "ERROR: NODE_S3_PREFIX environment variable is missing."
-            missing=1
-          fi
-
-          if [ "${missing}" -ne 0 ]; then
-            echo "One or more required GitHub Environment variables are missing."
-            exit 1
-          fi
-
-          echo "All required GitHub Environment variables are present."
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Confirm AWS identity
-        run: |
-          set -euo pipefail
-
-          echo "AWS caller identity:"
-          aws sts get-caller-identity
-
-      - name: Download exact Node web artifact from GitHub Release
+      - name: Find latest Node release
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_TAG="$(gh release list \
+            --repo "${REPO}" \
+            --limit 50 \
+            --json tagName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[] | select(.tagName | startswith(\"${RELEASE_PREFIX}\")) | .tagName" \
+            | head -n 1)"
+
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo "ERROR: No release found with prefix ${RELEASE_PREFIX}"
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "Selected release: ${RELEASE_TAG}"
+
+      - name: Download release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           mkdir -p release-assets
-
-          echo "Downloading node-web-*.zip from exact release: ${RELEASE_TAG}"
 
           gh release download "${RELEASE_TAG}" \
             --repo "${REPO}" \
@@ -289,10 +94,9 @@ jobs:
             --pattern "SHA256SUMS.txt" \
             --dir release-assets/
 
-          echo "Downloaded release assets:"
           ls -lh release-assets/
 
-      - name: Verify Node web artifact checksum
+      - name: Verify checksum
         run: |
           set -euo pipefail
 
@@ -300,65 +104,31 @@ jobs:
 
           NODE_WEB_ZIP="$(ls node-web-*.zip | head -n 1)"
 
-          if [ -z "${NODE_WEB_ZIP}" ]; then
-            echo "ERROR: node-web-*.zip was not downloaded."
-            exit 1
-          fi
-
-          if [ ! -f SHA256SUMS.txt ]; then
-            echo "ERROR: SHA256SUMS.txt was not downloaded."
-            exit 1
-          fi
-
-          echo "Node web ZIP: ${NODE_WEB_ZIP}"
-
           grep " ${NODE_WEB_ZIP}$" SHA256SUMS.txt > SHA256SUMS-node-web.txt
 
-          echo "Checksum entry used for validation:"
           cat SHA256SUMS-node-web.txt
-
           sha256sum -c SHA256SUMS-node-web.txt
 
-          echo "Checksum verification passed."
-
-      - name: Extract Node static web artifact
+      - name: Extract artifact
         run: |
           set -euo pipefail
 
           mkdir -p site
 
           NODE_WEB_ZIP="$(ls release-assets/node-web-*.zip | head -n 1)"
-
-          echo "Extracting ${NODE_WEB_ZIP}"
           unzip -q "${NODE_WEB_ZIP}" -d site/
 
-          echo "Extracted site files:"
+          test -f site/index.html
+          test -f site/error.html
+          test -f site/styles.css
+          test -f site/health.json
+          test -f site/version.json
+          test -f site/deployment-info.json
+
           find site -maxdepth 2 -type f -print | sort
 
-          required_files=(
-            "site/index.html"
-            "site/error.html"
-            "site/styles.css"
-            "site/health.json"
-            "site/version.json"
-            "site/deployment-info.json"
-          )
-
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "ERROR: Required static web file missing after extraction: $file"
-              exit 1
-            fi
-          done
-
-          echo "Static web artifact extracted successfully."
-
-      - name: Enrich private S3 deployment metadata
+      - name: Update deployment metadata
         env:
-          ENVIRONMENT_NAME: ${{ needs.resolve-release.outputs.environment_name }}
-          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
-          PR_NUMBER: ${{ needs.resolve-release.outputs.pr_number }}
-          PR_HEAD_SHA: ${{ needs.resolve-release.outputs.pr_head_sha }}
           NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
           NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
         run: |
@@ -369,11 +139,8 @@ jobs:
           cat > site/deployment-info.json <<EOF
           {
             "app": "shipfast-node",
-            "environment": "${ENVIRONMENT_NAME}",
+            "environment": "dev",
             "release_tag": "${RELEASE_TAG}",
-            "pr_number": "${PR_NUMBER}",
-            "pr_head_sha": "${PR_HEAD_SHA}",
-            "push_commit_sha": "${GITHUB_SHA}",
             "deployed_by": "github-actions",
             "deployed_at": "${DEPLOYED_AT}",
             "deployment_target": "private-amazon-s3-bucket",
@@ -386,7 +153,7 @@ jobs:
           cat > site/health.json <<EOF
           {
             "app": "shipfast-node",
-            "environment": "${ENVIRONMENT_NAME}",
+            "environment": "dev",
             "status": "ok",
             "release_tag": "${RELEASE_TAG}",
             "deployment_target": "private-amazon-s3-bucket",
@@ -397,131 +164,76 @@ jobs:
           cat > site/version.json <<EOF
           {
             "app": "shipfast-node",
-            "environment": "${ENVIRONMENT_NAME}",
+            "environment": "dev",
             "release_tag": "${RELEASE_TAG}",
-            "pr_number": "${PR_NUMBER}",
-            "pr_head_sha": "${PR_HEAD_SHA}",
-            "push_commit_sha": "${GITHUB_SHA}",
             "deployed_by": "github-actions",
             "deployed_at": "${DEPLOYED_AT}"
           }
           EOF
 
-          echo "Final deployment metadata:"
           cat site/deployment-info.json
 
-      - name: Publish static files to private DEV S3 bucket
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Confirm AWS identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+
+      - name: Upload files to private S3
         env:
           NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
           NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
         run: |
           set -euo pipefail
-
-          echo "=================================================="
-          echo "Publishing Node static files to private S3"
-          echo "=================================================="
-          echo "Bucket : ${NODE_S3_BUCKET}"
-          echo "Prefix : ${NODE_S3_PREFIX}"
-          echo "Source : site/"
-          echo "Target : s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/"
-          echo "=================================================="
 
           aws s3 sync site/ "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" \
             --delete \
             --cache-control "no-cache"
 
-          echo "Private S3 contents after deployment:"
           aws s3 ls "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" --recursive
 
-      - name: Validate private S3 deployment
+      - name: Validate S3 deployment
         env:
           NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
           NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
         run: |
           set -euo pipefail
 
-          echo "=================================================="
-          echo "Validating private S3 deployment"
-          echo "=================================================="
-          echo "Bucket: ${NODE_S3_BUCKET}"
-          echo "Prefix: ${NODE_S3_PREFIX}"
-          echo "=================================================="
-
-          required_objects=(
-            "index.html"
-            "error.html"
-            "styles.css"
-            "health.json"
-            "version.json"
-            "deployment-info.json"
-          )
-
-          for object in "${required_objects[@]}"; do
-            KEY="${NODE_S3_PREFIX}/${object}"
-
-            echo "Checking object: s3://${NODE_S3_BUCKET}/${KEY}"
-
+          for object in index.html error.html styles.css health.json version.json deployment-info.json; do
             aws s3api head-object \
               --bucket "${NODE_S3_BUCKET}" \
-              --key "${KEY}" >/dev/null
+              --key "${NODE_S3_PREFIX}/${object}" >/dev/null
 
-            echo "OK: ${KEY}"
+            echo "Validated: s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/${object}"
           done
 
-          echo ""
           echo "health.json:"
           aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/health.json" -
 
-          echo ""
           echo "version.json:"
           aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/version.json" -
 
-          echo ""
-          echo "deployment-info.json:"
-          aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/deployment-info.json" -
-
-          echo ""
-          echo "Private S3 validation completed successfully."
-
-      - name: Write private S3 deployment summary
+      - name: Write deployment summary
         env:
-          ENVIRONMENT_NAME: ${{ needs.resolve-release.outputs.environment_name }}
-          BRANCH_NAME: ${{ needs.resolve-release.outputs.branch_name }}
-          PR_NUMBER: ${{ needs.resolve-release.outputs.pr_number }}
-          PR_HEAD_SHA: ${{ needs.resolve-release.outputs.pr_head_sha }}
-          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
           NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
         run: |
           {
-            echo "## Node Private S3 Deployment Summary"
+            echo "## Node CD Deployment Summary"
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| App | shipfast-node |"
-            echo "| Branch | ${BRANCH_NAME} |"
-            echo "| Environment | ${ENVIRONMENT_NAME} |"
-            echo "| PR number | ${PR_NUMBER} |"
-            echo "| PR head SHA | ${PR_HEAD_SHA} |"
+            echo "| Environment | dev |"
             echo "| Release tag | ${RELEASE_TAG} |"
-            echo "| Artifact deployed | node-web-*.zip |"
+            echo "| Artifact | node-web-*.zip |"
             echo "| AWS region | ${AWS_REGION} |"
             echo "| S3 bucket | ${NODE_S3_BUCKET} |"
             echo "| S3 prefix | ${NODE_S3_PREFIX} |"
             echo "| External access | Disabled |"
-            echo "| Deployment target | Private Amazon S3 bucket |"
-            echo ""
-            echo "### Deployment Metadata"
-            echo ""
-            echo '```json'
-            cat site/deployment-info.json
-            echo '```'
-            echo ""
-            echo "### Validation Method"
-            echo ""
-            echo "- AWS OIDC authentication verified using aws sts get-caller-identity"
-            echo "- S3 object existence verified using aws s3api head-object"
-            echo "- Metadata files verified using aws s3 cp"
-            echo "- No public S3 website endpoint was used"
           } >> "$GITHUB_STEP_SUMMARY"
