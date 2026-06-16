@@ -1,4 +1,4 @@
-name: Python Docker Hub Publish
+name: Python Container Publish
 
 on:
   workflow_dispatch:
@@ -10,16 +10,25 @@ on:
         type: choice
         options:
           - dev
-          - stage
-          - prod
-      image_tag:
-        description: "Docker image tag"
+
+      target_registry:
+        description: "Target container registry"
         required: true
-        default: "dev"
+        default: "dockerhub"
+        type: choice
+        options:
+          - dockerhub
+          - ghcr
+
+      image_version:
+        description: "Docker image version tag, for example v1.0.0-dev"
+        required: true
+        default: "v1.0.0-dev"
         type: string
 
 permissions:
   contents: read
+  packages: write
 
 defaults:
   run:
@@ -27,7 +36,7 @@ defaults:
 
 jobs:
   build-and-push:
-    name: Build and Push Python Image to Docker Hub
+    name: Build and Push Python Docker Image
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -35,13 +44,26 @@ jobs:
 
     env:
       IMAGE_REPOSITORY: shipfast-python
-      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_VERSION: ${{ inputs.image_version }}
+      TARGET_REGISTRY: ${{ inputs.target_registry }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate Dockerfile
+        run: |
+          set -euo pipefail
+
+          if [ ! -f apps/python/Dockerfile ]; then
+            echo "ERROR: apps/python/Dockerfile is missing."
+            exit 1
+          fi
+
+          echo "Dockerfile found: apps/python/Dockerfile"
+
       - name: Validate Docker Hub secrets
+        if: ${{ inputs.target_registry == 'dockerhub' }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -50,19 +72,18 @@ jobs:
 
           if [ -z "${DOCKERHUB_USERNAME}" ]; then
             echo "ERROR: DOCKERHUB_USERNAME secret is missing."
-            echo "Check GitHub Environment secrets for the selected environment."
             exit 1
           fi
 
           if [ -z "${DOCKERHUB_TOKEN}" ]; then
             echo "ERROR: DOCKERHUB_TOKEN secret is missing."
-            echo "Check GitHub Environment secrets for the selected environment."
             exit 1
           fi
 
           echo "Docker Hub secrets are available."
 
-      - name: Set Docker image name
+      - name: Set Docker Hub image name
+        if: ${{ inputs.target_registry == 'dockerhub' }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
@@ -72,15 +93,40 @@ jobs:
 
           echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
 
-          echo "Image name : ${IMAGE_NAME}"
-          echo "Image tag  : ${IMAGE_TAG}"
-          echo "Full image : ${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Target registry : Docker Hub"
+          echo "Image name      : ${IMAGE_NAME}"
+          echo "Image version   : ${IMAGE_VERSION}"
+          echo "Full image      : ${IMAGE_NAME}:${IMAGE_VERSION}"
+
+      - name: Set GHCR image name
+        if: ${{ inputs.target_registry == 'ghcr' }}
+        run: |
+          set -euo pipefail
+
+          REPOSITORY_LOWERCASE="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_NAME="ghcr.io/${REPOSITORY_LOWERCASE}/${IMAGE_REPOSITORY}"
+
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+          echo "Target registry : GHCR"
+          echo "Image name      : ${IMAGE_NAME}"
+          echo "Image version   : ${IMAGE_VERSION}"
+          echo "Full image      : ${IMAGE_NAME}:${IMAGE_VERSION}"
 
       - name: Login to Docker Hub
+        if: ${{ inputs.target_registry == 'dockerhub' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GHCR
+        if: ${{ inputs.target_registry == 'ghcr' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -88,32 +134,29 @@ jobs:
           context: apps/python
           file: apps/python/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.IMAGE_NAME }}:latest
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
 
-      - name: Write Docker Hub publish summary
+      - name: Write publish summary
         run: |
           {
-            echo "## Python Docker Hub Publish Summary"
+            echo "## Python Container Publish Summary"
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| GitHub Environment | ${{ inputs.target_environment }} |"
-            echo "| Registry | Docker Hub |"
+            echo "| Target registry | ${TARGET_REGISTRY} |"
             echo "| Image | ${IMAGE_NAME} |"
-            echo "| Tag | ${IMAGE_TAG} |"
-            echo "| Latest tag updated | yes |"
+            echo "| Version tag | ${IMAGE_VERSION} |"
             echo ""
             echo "### Pull Command"
             echo ""
             echo '```bash'
-            echo "docker pull ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "docker pull ${IMAGE_NAME}:${IMAGE_VERSION}"
             echo '```'
             echo ""
             echo "### Run Command"
             echo ""
             echo '```bash'
-            echo "docker run --rm -p 8000:8000 ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "docker run --rm -p 8000:8000 ${IMAGE_NAME}:${IMAGE_VERSION}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
