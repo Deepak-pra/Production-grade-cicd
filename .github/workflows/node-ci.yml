@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - dev
+      - stage
+      - main
     paths:
       - "apps/node/**"
       - ".github/workflows/node-ci.yml"
@@ -19,6 +21,7 @@ jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -42,15 +45,32 @@ jobs:
           )
 
           for file in "${required_files[@]}"; do
-            test -f "${file}"
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Required file missing: ${file}"
+              exit 1
+            fi
           done
 
-          echo "Required files are present."
+          echo "Required Node files are present."
+
+      - name: Validate build:web script
+        run: |
+          set -euo pipefail
+
+          if ! grep -q '"build:web"' apps/node/package.json; then
+            echo "ERROR: package.json does not contain build:web script."
+            echo "Expected:"
+            echo '"build:web": "node scripts/build-web.js"'
+            exit 1
+          fi
+
+          echo "build:web script is present."
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     needs: validate
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -73,6 +93,7 @@ jobs:
     name: Unit Test
     runs-on: ubuntu-latest
     needs: validate
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -95,6 +116,7 @@ jobs:
     name: Integration Test
     runs-on: ubuntu-latest
     needs: validate
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -116,10 +138,7 @@ jobs:
   sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
-    needs:
-      - lint
-      - unit-test
-      - integration-test
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -136,9 +155,15 @@ jobs:
         working-directory: apps/node
         run: npm ci
 
-      - name: Generate coverage
+      - name: Generate coverage for SonarCloud
         working-directory: apps/node
         run: npm test
+
+      - name: Verify coverage report
+        working-directory: apps/node
+        run: |
+          set -euo pipefail
+          ls -lh coverage/lcov.info
 
       - name: Run SonarQube scan
         uses: SonarSource/sonarqube-scan-action@v6
@@ -151,7 +176,8 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: sonar
+    needs: [ lint, unit-test, integration-test, sonar ]
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -166,14 +192,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          SHORT_SHA="${{ github.event.pull_request.head.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
 
-          VERSION="1.0.0-dev-${SHORT_SHA}"
+          case "${PR_BASE_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported PR target branch: ${PR_BASE_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
           RELEASE_TAG="node-${VERSION}"
 
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
+          echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+          echo "PR_BASE_BRANCH=${PR_BASE_BRANCH}" >> "$GITHUB_ENV"
 
           echo "Version: ${VERSION}"
           echo "Release tag: ${RELEASE_TAG}"
@@ -182,9 +228,20 @@ jobs:
         working-directory: apps/node
         run: npm ci
 
-      - name: Build npm package
+      - name: Build npm package artifact
         working-directory: apps/node
-        run: npm run build
+        run: |
+          set -euo pipefail
+
+          npm run build
+
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: Node .tgz artifact was not generated."
+            exit 1
+          fi
+
+          echo "Node package artifact:"
+          ls -lh dist/*.tgz
 
       - name: Build static web artifact
         working-directory: apps/node
@@ -193,13 +250,30 @@ jobs:
 
           npm run build:web
 
+          required_files=(
+            "dist/web/index.html"
+            "dist/web/error.html"
+            "dist/web/styles.css"
+            "dist/web/health.json"
+            "dist/web/version.json"
+            "dist/web/deployment-info.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Missing static web file: ${file}"
+              exit 1
+            fi
+          done
+
           WEB_ZIP_NAME="node-web-${VERSION}.zip"
 
           cd dist/web
           zip -r "../${WEB_ZIP_NAME}" .
           cd ..
 
-          ls -lh
+          echo "Static web artifact:"
+          ls -lh "${WEB_ZIP_NAME}"
 
       - name: Generate checksum
         working-directory: apps/node
@@ -208,6 +282,8 @@ jobs:
 
           cd dist
           sha256sum *.tgz node-web-*.zip > SHA256SUMS.txt
+
+          echo "Generated checksum:"
           cat SHA256SUMS.txt
 
       - name: Upload build artifact
@@ -225,19 +301,34 @@ jobs:
     name: Trivy Scan
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: node-dist-${{ github.event.pull_request.head.sha }}
           path: apps/node/dist/
 
-      - name: Run Trivy scan on build output
+      - name: Show scan inputs
+        run: |
+          set -euo pipefail
+
+          echo "Node dependency files:"
+          ls -lh apps/node/package.json
+          ls -lh apps/node/package-lock.json
+
+          echo "Build artifacts:"
+          ls -lh apps/node/dist/
+
+      - name: Run Trivy scan on Node dependencies
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
-          scan-ref: apps/node/dist
+          scan-ref: apps/node
           scanners: vuln
           severity: HIGH,CRITICAL
           format: table
@@ -248,6 +339,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: trivy
+    timeout-minutes: 10
 
     permissions:
       contents: write
@@ -257,14 +349,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          SHORT_SHA="${{ github.event.pull_request.head.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
 
-          VERSION="1.0.0-dev-${SHORT_SHA}"
+          case "${PR_BASE_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported PR target branch: ${PR_BASE_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
           RELEASE_TAG="node-${VERSION}"
 
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
+          echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+          echo "PR_BASE_BRANCH=${PR_BASE_BRANCH}" >> "$GITHUB_ENV"
+
+          echo "Version: ${VERSION}"
+          echo "Release tag: ${RELEASE_TAG}"
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -272,15 +387,37 @@ jobs:
           name: node-dist-${{ github.event.pull_request.head.sha }}
           path: dist/
 
-      - name: Publish release
+      - name: Validate release files
+        run: |
+          set -euo pipefail
+
+          echo "Release files:"
+          ls -lh dist/
+
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: .tgz artifact missing."
+            exit 1
+          fi
+
+          if ! ls dist/node-web-*.zip >/dev/null 2>&1; then
+            echo "ERROR: node-web-*.zip artifact missing."
+            exit 1
+          fi
+
+          if [ ! -f dist/SHA256SUMS.txt ]; then
+            echo "ERROR: SHA256SUMS.txt missing."
+            exit 1
+          fi
+
+      - name: Publish artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          ls -lh dist/
-
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release exists. Uploading assets with clobber."
+
             gh release upload "${RELEASE_TAG}" \
               dist/*.tgz \
               dist/node-web-*.zip \
@@ -288,13 +425,15 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
           else
+            echo "Creating release."
+
             gh release create "${RELEASE_TAG}" \
               dist/*.tgz \
               dist/node-web-*.zip \
               dist/SHA256SUMS.txt \
               --repo "${GITHUB_REPOSITORY}" \
               --title "Node Build ${VERSION}" \
-              --notes "Node CI build artifact for dev environment."
+              --notes "Node CI build artifact for ${ENVIRONMENT_NAME}. PR head SHA: ${PR_HEAD_SHA}."
           fi
 
       - name: Write release summary
@@ -304,8 +443,11 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
+            echo "| Environment | ${ENVIRONMENT_NAME} |"
             echo "| Version | ${VERSION} |"
             echo "| Release tag | ${RELEASE_TAG} |"
+            echo "| PR base branch | ${PR_BASE_BRANCH} |"
+            echo "| PR head SHA | ${PR_HEAD_SHA} |"
             echo "| Package artifact | .tgz |"
             echo "| Static web artifact | node-web-*.zip |"
             echo "| Checksum file | SHA256SUMS.txt |"
