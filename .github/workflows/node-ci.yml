@@ -234,7 +234,7 @@ jobs:
           path: apps/node/dist/
 
       - name: Run Trivy scan on build output
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: apps/node/dist
