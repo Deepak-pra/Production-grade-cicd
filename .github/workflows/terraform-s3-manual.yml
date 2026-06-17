@@ -122,6 +122,7 @@ jobs:
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.9.8"
+          terraform_wrapper: false
 
       - name: Terraform version
         run: |
@@ -143,40 +144,48 @@ jobs:
             -backend-config="bucket=$env:TF_BACKEND_BUCKET" `
             -backend-config="key=$env:TF_BACKEND_KEY" `
             -backend-config="region=$env:TF_BACKEND_REGION" `
-            -backend-config="encrypt=true"
+            -backend-config="encrypt=true" `
+            -input=false `
+            -no-color
 
       - name: Terraform validate
         run: |
           $ErrorActionPreference = "Stop"
 
-          terraform validate
+          terraform validate -no-color
 
       - name: Terraform plan
         run: |
           $ErrorActionPreference = "Stop"
 
-          terraform plan -out=tfplan
+          terraform plan -out=tfplan -input=false -no-color
+
+      - name: Show Terraform plan output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          terraform show -no-color tfplan
 
       - name: Terraform apply
         if: ${{ inputs.run_apply == true }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          terraform apply -auto-approve tfplan
+          terraform apply -auto-approve -input=false -no-color tfplan
 
       - name: Terraform destroy
         if: ${{ inputs.run_destroy == true }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          terraform destroy -auto-approve
+          terraform destroy -auto-approve -input=false -no-color
 
       - name: Terraform output
         if: ${{ inputs.run_apply == true && inputs.run_destroy == false }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          terraform output
+          terraform output -no-color
 
       - name: Write workflow summary
         if: always()
@@ -217,5 +226,6 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- No AWS access keys are stored in GitHub secrets."
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform state is stored in S3 remote backend."
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Workflow always runs until terraform plan."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform plan output is visible in the 'Show Terraform plan output' step."
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform apply runs only when run_apply is true."
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform destroy runs only when run_destroy is true."
