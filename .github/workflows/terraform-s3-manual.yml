@@ -14,11 +14,14 @@ on:
       run_apply:
         description: "Run terraform apply?"
         required: true
-        default: "no"
-        type: choice
-        options:
-          - no
-          - yes
+        default: false
+        type: boolean
+
+      run_destroy:
+        description: "Run terraform destroy?"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -30,9 +33,9 @@ defaults:
 
 jobs:
   terraform:
-    name: Terraform S3 Bucket on Windows
+    name: Terraform S3 Bucket
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     environment: ${{ inputs.target_environment }}
 
@@ -54,27 +57,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate required GitHub Environment variables
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-          TF_S3_BUCKET_NAME: ${{ vars.TF_S3_BUCKET_NAME }}
-          TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
+      - name: Validate inputs and environment variables
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:AWS_REGION)) {
+          if ("${{ inputs.run_apply }}" -eq "true" -and "${{ inputs.run_destroy }}" -eq "true") {
+            Write-Error "run_apply and run_destroy cannot both be true."
+            exit 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:TF_VAR_aws_region)) {
             Write-Error "AWS_REGION environment variable is missing."
             exit 1
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:AWS_ROLE_ARN)) {
+          if ([string]::IsNullOrWhiteSpace("${{ vars.AWS_ROLE_ARN }}")) {
             Write-Error "AWS_ROLE_ARN environment variable is missing."
-            exit 1
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:TF_S3_BUCKET_NAME)) {
-            Write-Error "TF_S3_BUCKET_NAME environment variable is missing."
             exit 1
           }
 
@@ -83,78 +81,53 @@ jobs:
             exit 1
           }
 
-          if (-not $env:TF_S3_BUCKET_NAME.StartsWith("shipfast-tf-demo-")) {
-            Write-Error "TF_S3_BUCKET_NAME must start with shipfast-tf-demo-"
+          if ([string]::IsNullOrWhiteSpace($env:TF_VAR_bucket_name)) {
+            Write-Error "TF_S3_BUCKET_NAME environment variable is missing."
             exit 1
           }
 
-          if ($env:TF_S3_BUCKET_NAME -eq $env:TF_BACKEND_BUCKET) {
-            Write-Error "TF_S3_BUCKET_NAME and TF_BACKEND_BUCKET must not be the same bucket."
+          if (-not $env:TF_VAR_bucket_name.StartsWith("shipfast-tf-demo-")) {
+            Write-Error "TF_S3_BUCKET_NAME must start with shipfast-tf-demo-."
             exit 1
           }
 
-          Write-Host "GitHub Environment variables validated."
-          Write-Host "AWS region            : $env:AWS_REGION"
-          Write-Host "Target S3 bucket      : $env:TF_S3_BUCKET_NAME"
-          Write-Host "Terraform backend     : $env:TF_BACKEND_BUCKET"
-          Write-Host "Terraform backend key : $env:TF_BACKEND_KEY"
-          Write-Host "Environment           : $env:TF_VAR_environment"
+          if ($env:TF_VAR_bucket_name -eq $env:TF_BACKEND_BUCKET) {
+            Write-Error "TF_BACKEND_BUCKET and TF_S3_BUCKET_NAME must not be same."
+            exit 1
+          }
+
+          Write-Host "Validation completed successfully."
+          Write-Host "Environment       : $env:TF_VAR_environment"
+          Write-Host "Target bucket     : $env:TF_VAR_bucket_name"
+          Write-Host "Backend state key : $env:TF_BACKEND_KEY"
+          Write-Host "Run apply         : ${{ inputs.run_apply }}"
+          Write-Host "Run destroy       : ${{ inputs.run_destroy }}"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
 
-      - name: Confirm AWS identity
+      - name: Verify AWS authentication
         run: |
           $ErrorActionPreference = "Stop"
 
-          aws sts get-caller-identity
+          aws sts get-caller-identity | Out-Null
 
-      - name: Capture AWS identity for audit
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $identity = aws sts get-caller-identity | ConvertFrom-Json
-
-          "AWS_ACCOUNT_ID=$($identity.Account)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "AWS_CALLER_ARN=$($identity.Arn)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "AWS_USER_ID=$($identity.UserId)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "AWS account ID : $($identity.Account)"
-          Write-Host "AWS caller ARN : $($identity.Arn)"
+          Write-Host "AWS authentication verified using OIDC."
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.9.8"
 
-      - name: Show Terraform version
+      - name: Terraform version
         run: |
           $ErrorActionPreference = "Stop"
 
           terraform version
-
-      - name: Check Terraform files
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $requiredFiles = @(
-            "versions.tf",
-            "variables.tf",
-            "main.tf",
-            "outputs.tf"
-          )
-
-          foreach ($file in $requiredFiles) {
-            if (-not (Test-Path $file)) {
-              Write-Error "Required Terraform file is missing: $file"
-              exit 1
-            }
-          }
-
-          Write-Host "All required Terraform files are present."
 
       - name: Terraform format check
         run: |
@@ -162,7 +135,7 @@ jobs:
 
           terraform fmt -check -recursive
 
-      - name: Terraform init with S3 remote backend
+      - name: Terraform init with S3 backend
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -185,113 +158,64 @@ jobs:
           terraform plan -out=tfplan
 
       - name: Terraform apply
-        if: ${{ inputs.run_apply == 'yes' }}
+        if: ${{ inputs.run_apply == true }}
         run: |
           $ErrorActionPreference = "Stop"
 
           terraform apply -auto-approve tfplan
 
-      - name: Show Terraform outputs
-        if: ${{ inputs.run_apply == 'yes' }}
+      - name: Terraform destroy
+        if: ${{ inputs.run_destroy == true }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          terraform destroy -auto-approve
+
+      - name: Terraform output
+        if: ${{ inputs.run_apply == true && inputs.run_destroy == false }}
         run: |
           $ErrorActionPreference = "Stop"
 
           terraform output
 
-      - name: Write Terraform audit summary
+      - name: Write workflow summary
+        if: always()
         run: |
-          $ErrorActionPreference = "Stop"
-
           $applyInput = "${{ inputs.run_apply }}"
-          $targetEnvironment = "${{ inputs.target_environment }}"
+          $destroyInput = "${{ inputs.run_destroy }}"
 
-          if ($applyInput -eq "yes") {
-            $executionMode = "Plan and Apply"
-            $applyStatus = "Executed"
+          if ($destroyInput -eq "true") {
+            $mode = "Plan and Destroy"
+          }
+          elseif ($applyInput -eq "true") {
+            $mode = "Plan and Apply"
           }
           else {
-            $executionMode = "Plan Only"
-            $applyStatus = "Skipped"
+            $mode = "Plan Only"
           }
 
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Terraform S3 Provisioning Audit Summary"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Workflow Execution Details"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Terraform S3 Workflow Summary"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Field | Value |"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "|---|---|"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Workflow name | $env:GITHUB_WORKFLOW |"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Triggered by | $env:GITHUB_ACTOR |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Repository | $env:GITHUB_REPOSITORY |"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Branch / Ref | $env:GITHUB_REF_NAME |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Commit SHA | $env:GITHUB_SHA |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| GitHub run ID | $env:GITHUB_RUN_ID |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| GitHub run number | $env:GITHUB_RUN_NUMBER |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Runner OS | windows-latest |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Shell | PowerShell / pwsh |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Environment | ${{ inputs.target_environment }} |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Execution mode | $mode |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| run_apply | $applyInput |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| run_destroy | $destroyInput |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Target S3 bucket | $env:TF_VAR_bucket_name |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Backend state key | $env:TF_BACKEND_KEY |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Authentication | AWS OIDC |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Runner | windows-latest |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Shell | PowerShell |"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Terraform Execution Details"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Security Notes"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Field | Value |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "|---|---|"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Selected environment | $targetEnvironment |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Input: run_apply | $applyInput |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Execution mode | $executionMode |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Terraform apply status | $applyStatus |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Terraform working directory | infra/s3-demo |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Terraform backend type | S3 remote backend |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Terraform backend bucket | $env:TF_BACKEND_BUCKET |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Terraform backend key | $env:TF_BACKEND_KEY |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### AWS Authentication Details"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Field | Value |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "|---|---|"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Authentication method | GitHub Actions OIDC |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| AWS region | $env:TF_VAR_aws_region |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| AWS account ID | $env:AWS_ACCOUNT_ID |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| AWS caller ARN | $env:AWS_CALLER_ARN |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### S3 Provisioning Target"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Field | Value |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "|---|---|"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| S3 bucket name | $env:TF_VAR_bucket_name |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Bucket name rule | Must start with shipfast-tf-demo- |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Public access | Blocked |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Encryption | SSE-S3 |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Versioning | Enabled |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| Ownership controls | BucketOwnerEnforced |"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-
-          if ($applyInput -eq "yes") {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Terraform Outputs"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```text'
-
-            $terraformOutput = terraform output 2>$null
-
-            if ([string]::IsNullOrWhiteSpace($terraformOutput)) {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "No Terraform output was returned."
-            }
-            else {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $terraformOutput
-            }
-
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          }
-
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Audit Notes"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- This workflow was manually triggered using workflow_dispatch."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- AWS authentication used GitHub Actions OIDC."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- No AWS access keys were stored in GitHub secrets."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform remote state was stored in an S3 backend bucket."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform commands were executed on a Windows GitHub-hosted runner using PowerShell."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform apply ran only when run_apply was set to yes."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- The target S3 bucket is configured for private access."
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Static website hosting is not enabled by this Terraform configuration."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- AWS authentication used OIDC."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- AWS account ID and role ARN are not printed."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- No AWS access keys are stored in GitHub secrets."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform state is stored in S3 remote backend."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Workflow always runs until terraform plan."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform apply runs only when run_apply is true."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Terraform destroy runs only when run_destroy is true."
