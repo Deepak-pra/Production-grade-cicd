@@ -1,0 +1,88 @@
+name: Matrix Node Versions Demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  node-version-matrix:
+    name: Node.js ${{ matrix.node_version }} Validation
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node_version:
+          - "18"
+          - "20"
+          - "22"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node_version }}
+
+      - name: Show selected Node.js version
+        run: |
+          set -euo pipefail
+
+          echo "Matrix selected Node.js version: ${{ matrix.node_version }}"
+          echo "Actual Node.js version installed:"
+          node --version
+
+          echo "npm version:"
+          npm --version
+
+      - name: Validate Node project files
+        run: |
+          set -euo pipefail
+
+          test -f apps/node/package.json
+          test -f apps/node/package-lock.json
+
+          echo "Node project files are available."
+
+      - name: Install dependencies using npm ci
+        working-directory: apps/node
+        run: |
+          set -euo pipefail
+
+          npm ci
+
+      - name: Run Node lint
+        working-directory: apps/node
+        run: |
+          set -euo pipefail
+
+          npm run lint
+
+      - name: Run Node tests
+        working-directory: apps/node
+        run: |
+          set -euo pipefail
+
+          npm test
+
+      - name: Write matrix summary
+        run: |
+          {
+            echo "## Matrix Node Version Demo Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Matrix Node.js version | ${{ matrix.node_version }} |"
+            echo "| Runner | ubuntu-latest |"
+            echo "| Project path | apps/node |"
+            echo "| Dependency command | npm ci |"
+            echo "| Validation | lint and test |"
+          } >> "$GITHUB_STEP_SUMMARY"
