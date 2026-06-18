@@ -1,15 +1,13 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.11-alpine3.24
 
 WORKDIR /app
 
 COPY requirements.txt .
 
-RUN apt-get update \
-    && apt-get upgrade -y \
+RUN apk update \
+    && apk upgrade --no-cache \
     && python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir -r requirements.txt \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY calculator.py .
