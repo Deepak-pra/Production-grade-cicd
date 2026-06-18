@@ -237,11 +237,6 @@ jobs:
 
     environment: dev
 
-    outputs:
-      image_name: ${{ steps.image_metadata.outputs.image_name }}
-      image_version: ${{ steps.image_metadata.outputs.image_version }}
-      full_image: ${{ steps.image_metadata.outputs.full_image }}
-
     env:
       IMAGE_REPOSITORY: shipfast-python
 
@@ -304,22 +299,6 @@ jobs:
           echo "Image name      : ${IMAGE_NAME}"
           echo "Image version   : ${IMAGE_VERSION}"
           echo "Full image      : ${IMAGE_NAME}:${IMAGE_VERSION}"
-
-      - name: Set Docker image metadata outputs
-        id: image_metadata
-        run: |
-          set -euo pipefail
-
-          FULL_IMAGE="${IMAGE_NAME}:${IMAGE_VERSION}"
-
-          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "image_version=${IMAGE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "full_image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
-
-          echo "Docker image metadata prepared."
-          echo "Image name    : ${IMAGE_NAME}"
-          echo "Image version : ${IMAGE_VERSION}"
-          echo "Full image    : ${FULL_IMAGE}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -393,33 +372,48 @@ jobs:
     environment: dev
 
     env:
-      FULL_IMAGE: ${{ needs.docker-build-scan-push.outputs.full_image }}
-      IMAGE_NAME: ${{ needs.docker-build-scan-push.outputs.image_name }}
-      IMAGE_VERSION: ${{ needs.docker-build-scan-push.outputs.image_version }}
+      IMAGE_REPOSITORY: shipfast-python
       EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
       CONTAINER_NAME: ${{ vars.EC2_CONTAINER_NAME }}
       CONTAINER_PORT: ${{ vars.EC2_CONTAINER_PORT }}
 
     steps:
-      - name: Validate deployment inputs
+      - name: Prepare deployment image details
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
 
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          IMAGE_VERSION="v1.0.0-dev-${SHORT_SHA}"
+          IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+          FULL_IMAGE="${IMAGE_NAME}:${IMAGE_VERSION}"
+
+          echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
+
+          echo "Deployment image details prepared."
+          echo "Image version : ${IMAGE_VERSION}"
+          echo "Full image    : ${FULL_IMAGE}"
+
+      - name: Validate EC2 deployment inputs
+        run: |
+          set -euo pipefail
+
           if [ -z "${FULL_IMAGE}" ]; then
-            echo "ERROR: FULL_IMAGE is missing from docker-build-scan-push job output."
-            exit 1
-          fi
-
-          if [ -z "${IMAGE_NAME}" ]; then
-            echo "ERROR: IMAGE_NAME is missing from docker-build-scan-push job output."
-            exit 1
-          fi
-
-          if [ -z "${IMAGE_VERSION}" ]; then
-            echo "ERROR: IMAGE_VERSION is missing from docker-build-scan-push job output."
+            echo "ERROR: FULL_IMAGE is missing."
             exit 1
           fi
 
@@ -438,19 +432,8 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${DOCKERHUB_USERNAME}" ]; then
-            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
-            exit 1
-          fi
-
-          if [ -z "${DOCKERHUB_TOKEN}" ]; then
-            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
-            exit 1
-          fi
-
-          echo "Deployment inputs validated."
+          echo "EC2 deployment inputs validated."
           echo "Docker image     : ${FULL_IMAGE}"
-          echo "Image version    : ${IMAGE_VERSION}"
           echo "Target EC2       : ${EC2_INSTANCE_ID}"
           echo "Container name   : ${CONTAINER_NAME}"
           echo "Container port   : ${CONTAINER_PORT}"
@@ -480,7 +463,7 @@ jobs:
 
           echo "Private EC2 instance is online in Systems Manager."
 
-      - name: Send deployment command to private EC2
+      - name: Send Docker deployment command to private EC2
         id: ssm_deploy
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -530,7 +513,7 @@ jobs:
           COMMAND_ID="$(aws ssm send-command \
             --instance-ids "${EC2_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${FULL_IMAGE} to private EC2 using GitHub Actions" \
+            --comment "Deploy Docker image to private EC2 using GitHub Actions" \
             --parameters file://ssm-parameters.json \
             --query "Command.CommandId" \
             --output text)"
@@ -608,13 +591,14 @@ jobs:
             echo ""
             echo "### Deployment Flow"
             echo ""
+            echo "- Python quality gates completed successfully."
             echo "- Docker image was built locally in GitHub Actions."
             echo "- Docker image was scanned by Trivy."
             echo "- Docker image was pushed to Docker Hub only after Trivy passed."
             echo "- Deploy job authenticated to AWS using OIDC."
-            echo "- Deploy job sent SSM command to private EC2."
+            echo "- Deploy job sent an SSM command to private EC2."
             echo "- Private EC2 authenticated to Docker Hub."
-            echo "- Private EC2 downloaded the exact image using docker pull."
+            echo "- Private EC2 downloaded the exact Docker image using docker pull."
             echo "- Existing container with the same name was removed if present."
             echo "- New container was started on the private EC2 instance."
           } >> "$GITHUB_STEP_SUMMARY"
