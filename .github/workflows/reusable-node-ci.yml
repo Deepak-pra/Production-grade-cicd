@@ -501,6 +501,5 @@ jobs:
             echo "| Package artifact | .tgz |"
             echo "| Static web artifact | node-web-*.zip |"
             echo "| Checksum file | SHA256SUMS.txt |"
-            echo "| Called by | caller-node-ci.yml |"
             echo "| Reusable workflow | reusable-node-ci.yml |"
           } >> "$GITHUB_STEP_SUMMARY"
