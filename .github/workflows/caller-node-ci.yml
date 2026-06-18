@@ -1,0 +1,30 @@
+name: Caller Node CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Target environment for versioning"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+
+permissions:
+  contents: write
+
+jobs:
+  call-reusable-node-ci:
+    name: Call Reusable Node CI
+    uses: ./.github/workflows/reusable-node-ci.yml
+    with:
+      app_path: apps/node
+      node_version: "20"
+      base_version: "1.0.0"
+      target_environment: ${{ inputs.target_environment }}
+      source_sha: ${{ github.sha }}
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

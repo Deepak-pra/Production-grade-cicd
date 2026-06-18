@@ -1,0 +1,506 @@
+name: Reusable Node CI
+
+on:
+  workflow_call:
+    inputs:
+      app_path:
+        description: "Node application path"
+        required: true
+        type: string
+
+      node_version:
+        description: "Node.js version"
+        required: true
+        type: string
+
+      base_version:
+        description: "Base application version"
+        required: true
+        type: string
+
+      target_environment:
+        description: "Target environment used for versioning"
+        required: true
+        type: string
+
+      source_sha:
+        description: "Source commit SHA used for artifact and release versioning"
+        required: true
+        type: string
+
+    secrets:
+      SONAR_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "${{ inputs.app_path }}/package.json"
+            "${{ inputs.app_path }}/package-lock.json"
+            "${{ inputs.app_path }}/.eslintrc.json"
+            "${{ inputs.app_path }}/sonar-project.properties"
+            "${{ inputs.app_path }}/src/utils.js"
+            "${{ inputs.app_path }}/src/pipeline.js"
+            "${{ inputs.app_path }}/src/server.js"
+            "${{ inputs.app_path }}/__tests__/utils.test.js"
+            "${{ inputs.app_path }}/__tests__/pipeline.test.js"
+            "${{ inputs.app_path }}/scripts/build-web.js"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Required file missing: ${file}"
+              exit 1
+            fi
+          done
+
+          echo "Required Node files are present."
+
+      - name: Validate build:web script
+        run: |
+          set -euo pipefail
+
+          if ! grep -q '"build:web"' "${{ inputs.app_path }}/package.json"; then
+            echo "ERROR: package.json does not contain build:web script."
+            echo "Expected:"
+            echo '"build:web": "node scripts/build-web.js"'
+            exit 1
+          fi
+
+          echo "build:web script is present."
+
+      - name: Validate reusable workflow inputs
+        run: |
+          set -euo pipefail
+
+          case "${{ inputs.target_environment }}" in
+            dev|stage|prod)
+              echo "Target environment is valid: ${{ inputs.target_environment }}"
+              ;;
+            *)
+              echo "ERROR: Unsupported target environment: ${{ inputs.target_environment }}"
+              echo "Allowed values: dev, stage, prod"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${{ inputs.source_sha }}" ]; then
+            echo "ERROR: source_sha input is empty."
+            exit 1
+          fi
+
+          echo "Reusable workflow inputs are valid."
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_path }}
+        run: npm ci
+
+      - name: Run lint
+        working-directory: ${{ inputs.app_path }}
+        run: npm run lint
+
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_path }}
+        run: npm ci
+
+      - name: Run unit tests
+        working-directory: ${{ inputs.app_path }}
+        run: npx jest __tests__/utils.test.js --coverage
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_path }}
+        run: npm ci
+
+      - name: Run integration tests
+        working-directory: ${{ inputs.app_path }}
+        run: npx jest __tests__/pipeline.test.js --coverage
+
+  sonar:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_path }}
+        run: npm ci
+
+      - name: Generate coverage for SonarCloud
+        working-directory: ${{ inputs.app_path }}
+        run: npm test
+
+      - name: Verify coverage report
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          set -euo pipefail
+          ls -lh coverage/lcov.info
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: ${{ inputs.app_path }}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - unit-test
+      - integration-test
+      - sonar
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Prepare version
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA="${{ inputs.source_sha }}"
+          TARGET_ENVIRONMENT="${{ inputs.target_environment }}"
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+
+          case "${TARGET_ENVIRONMENT}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            prod)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported target environment: ${TARGET_ENVIRONMENT}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="${{ inputs.base_version }}-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="node-${VERSION}"
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          echo "Environment: ${ENVIRONMENT_NAME}"
+          echo "Version: ${VERSION}"
+          echo "Release tag: ${RELEASE_TAG}"
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_path }}
+        run: npm ci
+
+      - name: Build npm package artifact
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          set -euo pipefail
+
+          npm run build
+
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: Node .tgz artifact was not generated."
+            exit 1
+          fi
+
+          echo "Node package artifact:"
+          ls -lh dist/*.tgz
+
+      - name: Build static web artifact
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          set -euo pipefail
+
+          npm run build:web
+
+          required_files=(
+            "dist/web/index.html"
+            "dist/web/error.html"
+            "dist/web/styles.css"
+            "dist/web/health.json"
+            "dist/web/version.json"
+            "dist/web/deployment-info.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Missing static web file: ${file}"
+              exit 1
+            fi
+          done
+
+          WEB_ZIP_NAME="node-web-${VERSION}.zip"
+
+          cd dist/web
+          zip -r "../${WEB_ZIP_NAME}" .
+          cd ..
+
+          echo "Static web artifact:"
+          ls -lh "${WEB_ZIP_NAME}"
+
+      - name: Generate checksum
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          set -euo pipefail
+
+          cd dist
+          sha256sum *.tgz node-web-*.zip > SHA256SUMS.txt
+
+          echo "Generated checksum:"
+          cat SHA256SUMS.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-dist-${{ inputs.source_sha }}
+          path: |
+            ${{ inputs.app_path }}/dist/*.tgz
+            ${{ inputs.app_path }}/dist/node-web-*.zip
+            ${{ inputs.app_path }}/dist/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
+
+  trivy:
+    name: Trivy Scan
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: node-dist-${{ inputs.source_sha }}
+          path: ${{ inputs.app_path }}/dist/
+
+      - name: Show scan inputs
+        run: |
+          set -euo pipefail
+
+          echo "Node dependency files:"
+          ls -lh "${{ inputs.app_path }}/package.json"
+          ls -lh "${{ inputs.app_path }}/package-lock.json"
+
+          echo "Build artifacts:"
+          ls -lh "${{ inputs.app_path }}/dist/"
+
+      - name: Run Trivy scan on Node dependencies
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.app_path }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: trivy
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Prepare release tag
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA="${{ inputs.source_sha }}"
+          TARGET_ENVIRONMENT="${{ inputs.target_environment }}"
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+
+          case "${TARGET_ENVIRONMENT}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            prod)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported target environment: ${TARGET_ENVIRONMENT}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="${{ inputs.base_version }}-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="node-${VERSION}"
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          echo "Environment: ${ENVIRONMENT_NAME}"
+          echo "Version: ${VERSION}"
+          echo "Release tag: ${RELEASE_TAG}"
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: node-dist-${{ inputs.source_sha }}
+          path: dist/
+
+      - name: Validate release files
+        run: |
+          set -euo pipefail
+
+          echo "Release files:"
+          ls -lh dist/
+
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: .tgz artifact missing."
+            exit 1
+          fi
+
+          if ! ls dist/node-web-*.zip >/dev/null 2>&1; then
+            echo "ERROR: node-web-*.zip artifact missing."
+            exit 1
+          fi
+
+          if [ ! -f dist/SHA256SUMS.txt ]; then
+            echo "ERROR: SHA256SUMS.txt missing."
+            exit 1
+          fi
+
+      - name: Publish artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release exists. Uploading assets with clobber."
+
+            gh release upload "${RELEASE_TAG}" \
+              dist/*.tgz \
+              dist/node-web-*.zip \
+              dist/SHA256SUMS.txt \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            echo "Creating release."
+
+            gh release create "${RELEASE_TAG}" \
+              dist/*.tgz \
+              dist/node-web-*.zip \
+              dist/SHA256SUMS.txt \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Node Build ${VERSION}" \
+              --notes "Reusable Node CI build artifact for ${ENVIRONMENT_NAME}. Source SHA: ${SOURCE_SHA}."
+          fi
+
+      - name: Write release summary
+        run: |
+          {
+            echo "## Reusable Node CI Release Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | ${ENVIRONMENT_NAME} |"
+            echo "| Version | ${VERSION} |"
+            echo "| Release tag | ${RELEASE_TAG} |"
+            echo "| Source SHA | ${SOURCE_SHA} |"
+            echo "| Package artifact | .tgz |"
+            echo "| Static web artifact | node-web-*.zip |"
+            echo "| Checksum file | SHA256SUMS.txt |"
+            echo "| Called by | caller-node-ci.yml |"
+            echo "| Reusable workflow | reusable-node-ci.yml |"
+          } >> "$GITHUB_STEP_SUMMARY"
