@@ -19,7 +19,7 @@ on:
         type: string
 
       target_environment:
-        description: "Target environment used for versioning"
+        description: "Target environment used for versioning. Allowed values: dev, stage, prod"
         required: true
         type: string
 
@@ -33,7 +33,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
