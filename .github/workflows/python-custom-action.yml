@@ -1,0 +1,51 @@
+name: Python Validation Composite Demo
+
+on:
+  push:
+    branches:
+      - node-cd
+    paths:
+      - "apps/python/**"
+      - ".github/actions/python-validation-suite/**"
+      - ".github/workflows/python-custom-action.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validation:
+    name: Python Validation Using Composite Action
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Python validation suite
+        uses: ./.github/actions/python-validation-suite
+        with:
+          app_path: apps/python
+
+      - name: Write workflow summary
+        run: |
+          {
+            echo "## Python Validation Composite Demo Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Trigger | push to node-cd |"
+            echo "| App path | apps/python |"
+            echo "| Python version | 3.11 |"
+            echo "| Composite action | .github/actions/python-validation-suite |"
+            echo "| Validation scope | pyproject + deps + lint + unit + integration |"
+          } >> "$GITHUB_STEP_SUMMARY"
