@@ -1,0 +1,240 @@
+name: Node CD
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "apps/node/**"
+      - ".github/workflows/demo-node-ci.yml"
+      - ".github/workflows/demo-node-cd.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    name: Deploy to Private S3
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 10
+
+    concurrency:
+      group: node-private-s3-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Set deployment values
+        run: |
+          set -euo pipefail
+
+          echo "ENVIRONMENT_NAME=dev" >> "$GITHUB_ENV"
+          echo "RELEASE_PREFIX=node-1.0.0-dev-" >> "$GITHUB_ENV"
+
+      - name: Validate environment variables
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
+          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          test -n "${AWS_REGION}"
+          test -n "${AWS_ROLE_ARN}"
+          test -n "${NODE_S3_BUCKET}"
+          test -n "${NODE_S3_PREFIX}"
+
+          echo "Environment variables are available."
+          echo "S3 bucket: ${NODE_S3_BUCKET}"
+          echo "S3 prefix: ${NODE_S3_PREFIX}"
+
+      - name: Find latest Node release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_TAG="$(gh release list \
+            --repo "${REPO}" \
+            --limit 50 \
+            --json tagName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[] | select(.tagName | startswith(\"${RELEASE_PREFIX}\")) | .tagName" \
+            | head -n 1)"
+
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo "ERROR: No release found with prefix ${RELEASE_PREFIX}"
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "Selected release: ${RELEASE_TAG}"
+
+      - name: Download release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-assets
+
+          gh release download "${RELEASE_TAG}" \
+            --repo "${REPO}" \
+            --pattern "node-web-*.zip" \
+            --dir release-assets/
+
+          gh release download "${RELEASE_TAG}" \
+            --repo "${REPO}" \
+            --pattern "SHA256SUMS.txt" \
+            --dir release-assets/
+
+          ls -lh release-assets/
+
+      - name: Verify checksum
+        run: |
+          set -euo pipefail
+
+          cd release-assets
+
+          NODE_WEB_ZIP="$(ls node-web-*.zip | head -n 1)"
+
+          grep " ${NODE_WEB_ZIP}$" SHA256SUMS.txt > SHA256SUMS-node-web.txt
+
+          cat SHA256SUMS-node-web.txt
+          sha256sum -c SHA256SUMS-node-web.txt
+
+      - name: Extract artifact
+        run: |
+          set -euo pipefail
+
+          mkdir -p site
+
+          NODE_WEB_ZIP="$(ls release-assets/node-web-*.zip | head -n 1)"
+          unzip -q "${NODE_WEB_ZIP}" -d site/
+
+          test -f site/index.html
+          test -f site/error.html
+          test -f site/styles.css
+          test -f site/health.json
+          test -f site/version.json
+          test -f site/deployment-info.json
+
+          find site -maxdepth 2 -type f -print | sort
+
+      - name: Update deployment metadata
+        env:
+          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
+          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          cat > site/deployment-info.json <<EOF
+          {
+            "app": "shipfast-node",
+            "environment": "dev",
+            "release_tag": "${RELEASE_TAG}",
+            "deployed_by": "github-actions",
+            "deployed_at": "${DEPLOYED_AT}",
+            "deployment_target": "private-amazon-s3-bucket",
+            "s3_bucket": "${NODE_S3_BUCKET}",
+            "s3_prefix": "${NODE_S3_PREFIX}",
+            "external_access": "disabled"
+          }
+          EOF
+
+          cat > site/health.json <<EOF
+          {
+            "app": "shipfast-node",
+            "environment": "dev",
+            "status": "ok",
+            "release_tag": "${RELEASE_TAG}",
+            "deployment_target": "private-amazon-s3-bucket",
+            "external_access": "disabled"
+          }
+          EOF
+
+          cat > site/version.json <<EOF
+          {
+            "app": "shipfast-node",
+            "environment": "dev",
+            "release_tag": "${RELEASE_TAG}",
+            "deployed_by": "github-actions",
+            "deployed_at": "${DEPLOYED_AT}"
+          }
+          EOF
+
+          cat site/deployment-info.json
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Confirm AWS identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+
+      - name: Upload files to private S3
+        env:
+          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
+          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          aws s3 sync site/ "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" \
+            --delete \
+            --cache-control "no-cache"
+
+          aws s3 ls "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" --recursive
+
+      - name: Validate S3 deployment
+        env:
+          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
+          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          for object in index.html error.html styles.css health.json version.json deployment-info.json; do
+            aws s3api head-object \
+              --bucket "${NODE_S3_BUCKET}" \
+              --key "${NODE_S3_PREFIX}/${object}" >/dev/null
+
+            echo "Validated: s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/${object}"
+          done
+
+          echo "health.json:"
+          aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/health.json" -
+
+          echo "version.json:"
+          aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/version.json" -
+
+      - name: Write deployment summary
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
+          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+        run: |
+          {
+            echo "## Node CD Deployment Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | dev |"
+            echo "| Release tag | ${RELEASE_TAG} |"
+            echo "| Artifact | node-web-*.zip |"
+            echo "| AWS region | ${AWS_REGION} |"
+            echo "| S3 bucket | ${NODE_S3_BUCKET} |"
+            echo "| S3 prefix | ${NODE_S3_PREFIX} |"
+            echo "| External access | Disabled |"
+          } >> "$GITHUB_STEP_SUMMARY"

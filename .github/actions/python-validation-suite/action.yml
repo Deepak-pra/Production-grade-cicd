@@ -1,0 +1,64 @@
+name: Python Validation Suite
+description: Validate pyproject.toml, install dependencies, run lint, unit tests, and integration tests
+
+inputs:
+  app_path:
+    description: Python application path
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate pyproject.toml
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        set -euo pipefail
+
+        python - <<'PY'
+        import tomllib
+        from pathlib import Path
+
+        tomllib.loads(Path("pyproject.toml").read_text())
+        print("pyproject.toml is valid TOML")
+        PY
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        set -euo pipefail
+
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+
+    - name: Run lint
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        set -euo pipefail
+
+        flake8 . --config .flake8
+
+    - name: Run unit tests with coverage
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        set -euo pipefail
+
+        pytest tests/test_calculator.py -v \
+          --cov=. \
+          --cov-report=xml:coverage.xml \
+          --cov-report=term-missing
+
+    - name: Run integration tests with coverage
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        set -euo pipefail
+
+        pytest tests/test_pipeline.py -v \
+          --cov=. \
+          --cov-report=xml:coverage.xml \
+          --cov-report=term-missing
