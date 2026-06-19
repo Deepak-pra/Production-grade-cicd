@@ -1,0 +1,604 @@
+name: Python Docker CI
+
+on:
+  push:
+    branches:
+      - node-cd
+    paths:
+      - "apps/python/**"
+      - ".github/workflows/docker_validation.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate Python Project
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required Python files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "apps/python/app.py"
+            "apps/python/calculator.py"
+            "apps/python/pipeline.py"
+            "apps/python/pyproject.toml"
+            "apps/python/requirements.txt"
+            "apps/python/requirements-dev.txt"
+            "apps/python/.flake8"
+            "apps/python/sonar-project.properties"
+            "apps/python/tests/test_calculator.py"
+            "apps/python/tests/test_pipeline.py"
+            "apps/python/Dockerfile"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required Python files are present."
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run flake8
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          flake8 . --config .flake8
+
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate pyproject.toml
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          tomllib.loads(Path("pyproject.toml").read_text())
+          print("pyproject.toml is valid TOML")
+          PY
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests with coverage
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          pytest tests/test_calculator.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python unit coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-unit-coverage-${{ github.sha }}
+          path: apps/python/coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run integration tests with coverage
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          pytest tests/test_pipeline.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python integration coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-integration-coverage-${{ github.sha }}
+          path: apps/python/coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
+  sonar:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Generate full coverage for SonarCloud
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+
+          pytest tests/ -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: apps/python
+
+  docker-build-scan-push:
+    name: Build, Scan and Push Docker Image
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - unit-test
+      - integration-test
+      - sonar
+    timeout-minutes: 20
+
+    environment: dev
+
+    env:
+      IMAGE_REPOSITORY: shipfast-python
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Docker image version
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          IMAGE_VERSION="v1.0.0-dev-${SHORT_SHA}"
+
+          echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "$GITHUB_ENV"
+
+          echo "Docker image version: ${IMAGE_VERSION}"
+
+      - name: Validate Dockerfile
+        run: |
+          set -euo pipefail
+
+          if [ ! -f apps/python/Dockerfile ]; then
+            echo "ERROR: apps/python/Dockerfile is missing."
+            exit 1
+          fi
+
+          echo "Dockerfile found: apps/python/Dockerfile"
+
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
+            exit 1
+          fi
+
+          echo "Docker Hub secrets are available."
+
+      - name: Set Docker image name
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+          echo "Target registry : Docker Hub"
+          echo "Image name      : ${IMAGE_NAME}"
+          echo "Image version   : ${IMAGE_VERSION}"
+          echo "Full image      : ${IMAGE_NAME}:${IMAGE_VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image locally
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/python
+          file: apps/python/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+
+      - name: Show locally built Docker image
+        run: |
+          set -euo pipefail
+
+          echo "Locally built Docker image:"
+          docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}"
+
+      - name: Run Trivy scan on Docker image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: "true"
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image to Docker Hub
+        run: |
+          set -euo pipefail
+
+          docker push "${IMAGE_NAME}:${IMAGE_VERSION}"
+
+      - name: Write Docker CI summary
+        run: |
+          {
+            echo "## Python Docker CI Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Trigger | push to node-cd |"
+            echo "| GitHub Environment | dev |"
+            echo "| Registry | Docker Hub |"
+            echo "| Image | ${IMAGE_NAME} |"
+            echo "| Version tag | ${IMAGE_VERSION} |"
+            echo "| Full image | ${IMAGE_NAME}:${IMAGE_VERSION} |"
+            echo "| Dockerfile | apps/python/Dockerfile |"
+            echo "| Quality gates | lint, unit-test, integration-test, sonar |"
+            echo "| Docker image build | Completed locally |"
+            echo "| Trivy image scan | Passed before push |"
+            echo "| Docker Hub push | Completed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-private-ec2:
+    name: Deploy Docker Image to Private EC2
+    runs-on: ubuntu-latest
+    needs: docker-build-scan-push
+    timeout-minutes: 15
+
+    environment: dev
+
+    env:
+      IMAGE_REPOSITORY: shipfast-python
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      CONTAINER_NAME: ${{ vars.EC2_CONTAINER_NAME }}
+      CONTAINER_PORT: ${{ vars.EC2_CONTAINER_PORT }}
+
+    steps:
+      - name: Prepare deployment image details
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          IMAGE_VERSION="v1.0.0-dev-${SHORT_SHA}"
+          IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+          FULL_IMAGE="${IMAGE_NAME}:${IMAGE_VERSION}"
+
+          echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
+
+          echo "Deployment image details prepared."
+          echo "Image version : ${IMAGE_VERSION}"
+          echo "Full image    : ${FULL_IMAGE}"
+
+      - name: Validate EC2 deployment inputs
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FULL_IMAGE}" ]; then
+            echo "ERROR: FULL_IMAGE is missing."
+            exit 1
+          fi
+
+          if [ -z "${EC2_INSTANCE_ID}" ]; then
+            echo "ERROR: EC2_INSTANCE_ID variable is missing."
+            exit 1
+          fi
+
+          if [ -z "${CONTAINER_NAME}" ]; then
+            echo "ERROR: EC2_CONTAINER_NAME variable is missing."
+            exit 1
+          fi
+
+          if [ -z "${CONTAINER_PORT}" ]; then
+            echo "ERROR: EC2_CONTAINER_PORT variable is missing."
+            exit 1
+          fi
+
+          echo "EC2 deployment inputs validated."
+          echo "Docker image     : ${FULL_IMAGE}"
+          echo "Target EC2       : ${EC2_INSTANCE_ID}"
+          echo "Container name   : ${CONTAINER_NAME}"
+          echo "Container port   : ${CONTAINER_PORT}"
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Validate EC2 is online in Systems Manager
+        run: |
+          set -euo pipefail
+
+          PING_STATUS="$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
+            --query "InstanceInformationList[0].PingStatus" \
+            --output text)"
+
+          echo "SSM ping status: ${PING_STATUS}"
+
+          if [ "${PING_STATUS}" != "Online" ]; then
+            echo "ERROR: EC2 instance is not online in Systems Manager."
+            exit 1
+          fi
+
+          echo "Private EC2 instance is online in Systems Manager."
+
+      - name: Send Docker deployment command to private EC2
+        id: ssm_deploy
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import json
+          import os
+          import shlex
+
+          full_image = os.environ["FULL_IMAGE"]
+          dockerhub_username = os.environ["DOCKERHUB_USERNAME"]
+          dockerhub_token = os.environ["DOCKERHUB_TOKEN"]
+          container_name = os.environ["CONTAINER_NAME"]
+          container_port = os.environ["CONTAINER_PORT"]
+
+          commands = [
+              "set -euo pipefail",
+              "echo Starting Docker deployment on private EC2",
+              f"echo Image to deploy: {shlex.quote(full_image)}",
+              "docker --version",
+              "echo Authenticating to Docker Hub from EC2",
+              f"printf '%s' {shlex.quote(dockerhub_token)} | docker login --username {shlex.quote(dockerhub_username)} --password-stdin",
+              "echo Downloading Docker image from Docker Hub",
+              f"docker pull {shlex.quote(full_image)}",
+              "echo Removing existing container if present",
+              f"docker rm -f {shlex.quote(container_name)} || true",
+              "echo Starting new container",
+              f"docker run -d --name {shlex.quote(container_name)} --restart unless-stopped -p {shlex.quote(container_port)}:8000 {shlex.quote(full_image)}",
+              "echo Running container status",
+              f"docker ps --filter name={shlex.quote(container_name)}",
+              "sleep 5",
+              "echo Recent container logs",
+              f"docker logs --tail 50 {shlex.quote(container_name)}",
+              "echo Validating application locally on EC2",
+              f"if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:{shlex.quote(container_port)}/health || curl -fsS http://localhost:{shlex.quote(container_port)}/; else echo curl not available, skipping HTTP validation; fi",
+              "docker logout || true",
+              "echo Docker deployment completed successfully"
+          ]
+
+          with open("ssm-parameters.json", "w", encoding="utf-8") as file:
+              json.dump({"commands": commands}, file)
+          PY
+
+          COMMAND_ID="$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy Docker image to private EC2 using GitHub Actions" \
+            --parameters file://ssm-parameters.json \
+            --query "Command.CommandId" \
+            --output text)"
+
+          echo "COMMAND_ID=${COMMAND_ID}" >> "$GITHUB_ENV"
+          echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
+
+          echo "SSM command submitted: ${COMMAND_ID}"
+
+      - name: Wait for SSM deployment result
+        run: |
+          set -euo pipefail
+
+          echo "Waiting for SSM command to complete: ${COMMAND_ID}"
+
+          set +e
+          aws ssm wait command-executed \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}"
+          WAIT_EXIT_CODE=$?
+          set -e
+
+          STATUS="$(aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query "Status" \
+            --output text)"
+
+          echo "SSM command status: ${STATUS}"
+
+          echo "----- SSM Standard Output -----"
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query "StandardOutputContent" \
+            --output text
+
+          echo "----- SSM Standard Error -----"
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query "StandardErrorContent" \
+            --output text
+
+          if [ "${STATUS}" != "Success" ]; then
+            echo "ERROR: SSM deployment failed with status: ${STATUS}"
+            exit 1
+          fi
+
+          if [ "${WAIT_EXIT_CODE}" -ne 0 ]; then
+            echo "ERROR: SSM wait command returned non-zero exit code: ${WAIT_EXIT_CODE}"
+            exit 1
+          fi
+
+          echo "SSM deployment completed successfully."
+
+      - name: Write EC2 deployment summary
+        run: |
+          {
+            echo "## Private EC2 Docker Deployment Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | dev |"
+            echo "| Deployment method | AWS Systems Manager Run Command |"
+            echo "| Docker image downloaded on EC2 | ${FULL_IMAGE} |"
+            echo "| Image version | ${IMAGE_VERSION} |"
+            echo "| Container name | ${CONTAINER_NAME} |"
+            echo "| Container port | ${CONTAINER_PORT} |"
+            echo "| Target EC2 | ${EC2_INSTANCE_ID} |"
+            echo "| EC2 access model | Private EC2 using SSM |"
+            echo "| SSH required | No |"
+            echo "| Public IP required | No |"
+            echo "| SSM command ID | ${COMMAND_ID} |"
+            echo ""
+            echo "### Deployment Flow"
+            echo ""
+            echo "- Python quality gates completed successfully."
+            echo "- Docker image was built locally in GitHub Actions."
+            echo "- Docker image was scanned by Trivy."
+            echo "- Docker image was pushed to Docker Hub only after Trivy passed."
+            echo "- Deploy job authenticated to AWS using OIDC."
+            echo "- Deploy job sent an SSM command to private EC2."
+            echo "- Private EC2 authenticated to Docker Hub."
+            echo "- Private EC2 downloaded the exact Docker image using docker pull."
+            echo "- Existing container with the same name was removed if present."
+            echo "- New container was started on the private EC2 instance."
+          } >> "$GITHUB_STEP_SUMMARY"
