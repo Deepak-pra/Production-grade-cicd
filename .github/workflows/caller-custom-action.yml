@@ -1,4 +1,4 @@
-name: Python CI
+name:  Caller Workflow - Python Custom Action
 
 on:
   pull_request:
