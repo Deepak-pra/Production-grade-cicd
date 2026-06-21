@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: node-ci-pr-${{ github.event.pull_request.number }}
@@ -238,8 +239,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - metadata
-      - unit-test
-      - integration-test
+      - validate
     timeout-minutes: 15
 
     steps:
@@ -390,6 +390,11 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Run ID | ${GITHUB_RUN_ID} |"
+            echo "| Run Number | ${GITHUB_RUN_NUMBER} |"
+            echo "| Triggered By | ${GITHUB_ACTOR} |"
+            echo "| Job Status | ${{ job.status }} |"
             echo "| Environment | ${{ needs.metadata.outputs.environment_name }} |"
             echo "| Version | ${{ needs.metadata.outputs.version }} |"
             echo "| Release tag reserved | ${{ needs.metadata.outputs.release_tag }} |"
@@ -449,11 +454,16 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Run ID | ${GITHUB_RUN_ID} |"
+            echo "| Run Number | ${GITHUB_RUN_NUMBER} |"
+            echo "| Triggered By | ${GITHUB_ACTOR} |"
+            echo "| Job Status | ${{ job.status }} |"
             echo "| Scan target | apps/node |"
             echo "| Scanner | Trivy filesystem vulnerability scan |"
             echo "| Severity gate | HIGH,CRITICAL |"
             echo "| Policy | Build is blocked if HIGH or CRITICAL vulnerabilities are found |"
-            echo "| Result | Passed if this job is successful |"
+            echo "| Result | Passed because this job completed successfully |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   release:
@@ -466,6 +476,7 @@ jobs:
 
     permissions:
       contents: write
+      pull-requests: read
 
     steps:
       - name: Download build artifact
@@ -495,6 +506,24 @@ jobs:
             echo "ERROR: SHA256SUMS.txt missing."
             exit 1
           fi
+
+      - name: Fetch PR Approvers for Audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          APPROVERS="$(gh api \
+            repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews \
+            --jq '.[] | select(.state=="APPROVED") | .user.login' \
+            | sort -u | tr '\n' ',' | sed 's/,$//')"
+
+          if [ -z "${APPROVERS}" ]; then
+            APPROVERS="N/A"
+          fi
+
+          echo "PR_APPROVERS=${APPROVERS}" >> "$GITHUB_ENV"
 
       - name: Publish artifacts to GitHub Release
         env:
@@ -550,16 +579,47 @@ jobs:
       - name: Write release summary
         run: |
           {
-            echo "## Node CI Release Summary"
+            echo "## Node CI Release Summary - Audit"
             echo ""
+            echo "### Pipeline Details"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Run ID | ${GITHUB_RUN_ID} |"
+            echo "| Run Number | ${GITHUB_RUN_NUMBER} |"
+            echo "| Trigger Type | Pull Request |"
+            echo "| Triggered By | ${GITHUB_ACTOR} |"
+            echo "| Job Status | ${{ job.status }} |"
+            echo "| Pipeline Status | Completed successfully up to release job |"
+            echo ""
+            echo "### Pull Request Details"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| PR Number | ${{ github.event.pull_request.number }} |"
+            echo "| PR Author | ${{ github.event.pull_request.user.login }} |"
+            echo "| PR Source Branch | ${{ github.event.pull_request.head.ref }} |"
+            echo "| PR Target Branch | ${{ github.event.pull_request.base.ref }} |"
+            echo "| PR Approvers | ${PR_APPROVERS} |"
+            echo "| PR Head SHA | ${{ needs.metadata.outputs.pr_head_sha }} |"
+            echo ""
+            echo "### Build and Release Details"
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Environment | ${{ needs.metadata.outputs.environment_name }} |"
             echo "| Version | ${{ needs.metadata.outputs.version }} |"
-            echo "| Release tag | ${{ needs.metadata.outputs.release_tag }} |"
-            echo "| PR base branch | ${{ needs.metadata.outputs.pr_base_branch }} |"
-            echo "| PR head SHA | ${{ needs.metadata.outputs.pr_head_sha }} |"
-            echo "| Package artifact | .tgz |"
-            echo "| Static web artifact | node-web-*.zip |"
-            echo "| Checksum file | SHA256SUMS.txt |"
+            echo "| Release Tag | ${{ needs.metadata.outputs.release_tag }} |"
+            echo "| Artifact Name | ${{ needs.metadata.outputs.artifact_name }} |"
+            echo "| Package Artifact | .tgz |"
+            echo "| Static Web Artifact | node-web-*.zip |"
+            echo "| Checksum File | SHA256SUMS.txt |"
+            echo ""
+            echo "### Security and Compliance Details"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Lint | Passed before build |"
+            echo "| Unit Test | Passed before build |"
+            echo "| Integration Test | Passed before build |"
+            echo "| SonarCloud Scan | Completed before build promotion |"
+            echo "| Trivy Scan | Passed before release publishing |"
+            echo "| Release Policy | Release is published only after all CI quality and security gates succeed |"
           } >> "$GITHUB_STEP_SUMMARY"
