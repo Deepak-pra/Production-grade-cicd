@@ -22,7 +22,7 @@ on:
           - prod
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   call-reusable-node-ci:
