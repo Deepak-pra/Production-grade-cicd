@@ -1,10 +1,18 @@
-name: Node CI Caller Demo
+name: Node CI Caller
 
 on:
+  pull_request:
+    branches:
+      - node-cd
+    paths:
+      - "apps/node/**"
+      - ".github/workflows/node-ci-cl.yml"
+      - ".github/workflows/reusable-node-ci.yml"
+
   workflow_dispatch:
     inputs:
       target_environment:
-        description: "Target environment for version calculation"
+        description: "Target environment for versioning"
         required: true
         default: "dev"
         type: choice
@@ -17,14 +25,14 @@ permissions:
   contents: read
 
 jobs:
-  call-node-ci:
+  call-reusable-node-ci:
     name: Call Reusable Node CI
     uses: ./.github/workflows/reusable-node-ci.yml
     with:
       app_path: apps/node
       node_version: "20"
       base_version: "1.0.0"
-      target_environment: ${{ inputs.target_environment }}
-      source_sha: ${{ github.sha }}
+      target_environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'dev' }}
+      source_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
