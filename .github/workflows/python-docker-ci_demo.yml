@@ -1,0 +1,365 @@
+name: Python Docker CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - stage
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "apps/python/**"
+      - ".github/workflows/python-docker-ci_demo.yml"
+      - ".github/workflows/python-docker-cd-ec2.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate Python Project
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required Python files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "apps/python/app.py"
+            "apps/python/calculator.py"
+            "apps/python/pipeline.py"
+            "apps/python/pyproject.toml"
+            "apps/python/requirements.txt"
+            "apps/python/requirements-dev.txt"
+            "apps/python/.flake8"
+            "apps/python/sonar-project.properties"
+            "apps/python/tests/test_calculator.py"
+            "apps/python/tests/test_pipeline.py"
+            "apps/python/Dockerfile"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required Python files are present."
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run flake8
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          flake8 . --config .flake8
+
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate pyproject.toml
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          tomllib.loads(Path("pyproject.toml").read_text())
+          print("pyproject.toml is valid TOML")
+          PY
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests with coverage
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          pytest tests/test_calculator.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python unit coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-unit-coverage-${{ github.event.pull_request.head.sha }}
+          path: apps/python/coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run integration tests with coverage
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          pytest tests/test_pipeline.py -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python integration coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-integration-coverage-${{ github.event.pull_request.head.sha }}
+          path: apps/python/coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
+  sonar:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Generate full coverage for SonarCloud
+        working-directory: apps/python
+        run: |
+          set -euo pipefail
+          pytest tests/ -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: apps/python
+
+  docker-build-scan-push:
+    name: Build, Scan and Push Docker Image
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - unit-test
+      - integration-test
+      - sonar
+    timeout-minutes: 20
+
+    environment: dev
+
+    env:
+      IMAGE_REPOSITORY: shipfast-python
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Docker image version
+        run: |
+          set -euo pipefail
+
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
+          IMAGE_VERSION="v1.0.0-dev-${SHORT_SHA}"
+
+          echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "$GITHUB_ENV"
+
+          echo "Docker image version: ${IMAGE_VERSION}"
+
+      - name: Validate Dockerfile
+        run: |
+          set -euo pipefail
+
+          if [ ! -f apps/python/Dockerfile ]; then
+            echo "ERROR: apps/python/Dockerfile is missing."
+            exit 1
+          fi
+
+          echo "Dockerfile found: apps/python/Dockerfile"
+
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "ERROR: DOCKERHUB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN secret is missing."
+            exit 1
+          fi
+
+          echo "Docker Hub secrets are available."
+
+      - name: Set Docker image name
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+          echo "Target registry : Docker Hub"
+          echo "Image name      : ${IMAGE_NAME}"
+          echo "Image version   : ${IMAGE_VERSION}"
+          echo "Full image      : ${IMAGE_NAME}:${IMAGE_VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image locally
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/python
+          file: apps/python/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+
+      - name: Show locally built Docker image
+        run: |
+          set -euo pipefail
+          echo "Locally built Docker image:"
+          docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}"
+
+      - name: Run Trivy scan on Docker image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: "true"
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image to Docker Hub
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE_NAME}:${IMAGE_VERSION}"
+
+      - name: Write Docker CI summary
+        run: |
+          {
+            echo "## Python Docker CI Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Trigger | pull_request to node-cd |"
+            echo "| PR number | ${{ github.event.pull_request.number }} |"
+            echo "| PR base branch | ${{ github.event.pull_request.base.ref }} |"
+            echo "| PR head SHA | ${PR_HEAD_SHA} |"
+            echo "| GitHub Environment | dev |"
+            echo "| Registry | Docker Hub |"
+            echo "| Image | ${IMAGE_NAME} |"
+            echo "| Version tag | ${IMAGE_VERSION} |"
+            echo "| Full image | ${IMAGE_NAME}:${IMAGE_VERSION} |"
+            echo "| Dockerfile | apps/python/Dockerfile |"
+            echo "| Quality gates | lint, unit-test, integration-test, sonar |"
+            echo "| Docker image build | Completed locally |"
+            echo "| Trivy image scan | Passed before push |"
+            echo "| Docker Hub push | Completed |"
+          } >> "$GITHUB_STEP_SUMMARY"
