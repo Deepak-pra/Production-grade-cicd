@@ -1,240 +1,565 @@
-name: Node CD
+name: Node CI
 
 on:
-  push:
+  pull_request:
     branches:
       - dev
+      - stage
+      - main
     paths:
-      - "apps/node/**"
       - ".github/workflows/demo-node-ci.yml"
       - ".github/workflows/demo-node-cd.yml"
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: node-ci-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  deploy:
-    name: Deploy to Private S3
+  metadata:
+    name: Resolve CI Metadata
     runs-on: ubuntu-latest
-    environment: dev
-    timeout-minutes: 10
+    timeout-minutes: 5
 
-    concurrency:
-      group: node-private-s3-dev
-      cancel-in-progress: false
+    outputs:
+      environment_name: ${{ steps.resolve.outputs.environment_name }}
+      version: ${{ steps.resolve.outputs.version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      pr_head_sha: ${{ steps.resolve.outputs.pr_head_sha }}
+      pr_base_branch: ${{ steps.resolve.outputs.pr_base_branch }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
 
     steps:
-      - name: Set deployment values
+      - name: Resolve version and release metadata
+        id: resolve
         run: |
           set -euo pipefail
 
-          echo "ENVIRONMENT_NAME=dev" >> "$GITHUB_ENV"
-          echo "RELEASE_PREFIX=node-1.0.0-dev-" >> "$GITHUB_ENV"
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
 
-      - name: Validate environment variables
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+          case "${PR_BASE_BRANCH}" in
+            dev)
+              ENVIRONMENT_NAME="dev"
+              ;;
+            stage)
+              ENVIRONMENT_NAME="stage"
+              ;;
+            main)
+              ENVIRONMENT_NAME="prod"
+              ;;
+            *)
+              echo "ERROR: Unsupported PR target branch: ${PR_BASE_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          VERSION="1.0.0-${ENVIRONMENT_NAME}-${SHORT_SHA}"
+          RELEASE_TAG="node-${VERSION}"
+          ARTIFACT_NAME="node-dist-${PR_HEAD_SHA}"
+
+          echo "environment_name=${ENVIRONMENT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "pr_head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_base_branch=${PR_BASE_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+
+          echo "Environment : ${ENVIRONMENT_NAME}"
+          echo "Version     : ${VERSION}"
+          echo "Release tag : ${RELEASE_TAG}"
+          echo "PR SHA      : ${PR_HEAD_SHA}"
+          echo "Base branch : ${PR_BASE_BRANCH}"
+
+  validate:
+    name: Validate Repository Structure
+    runs-on: ubuntu-latest
+    needs: metadata
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+
+      - name: Validate required files
         run: |
           set -euo pipefail
 
-          test -n "${AWS_REGION}"
-          test -n "${AWS_ROLE_ARN}"
-          test -n "${NODE_S3_BUCKET}"
-          test -n "${NODE_S3_PREFIX}"
+          required_files=(
+            "apps/node/package.json"
+            "apps/node/package-lock.json"
+            "apps/node/.eslintrc.json"
+            "apps/node/sonar-project.properties"
+            "apps/node/src/utils.js"
+            "apps/node/src/pipeline.js"
+            "apps/node/src/server.js"
+            "apps/node/__tests__/utils.test.js"
+            "apps/node/__tests__/pipeline.test.js"
+            "apps/node/scripts/build-web.js"
+          )
 
-          echo "Environment variables are available."
-          echo "S3 bucket: ${NODE_S3_BUCKET}"
-          echo "S3 prefix: ${NODE_S3_PREFIX}"
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Required file missing: ${file}"
+              exit 1
+            fi
+          done
 
-      - name: Find latest Node release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          echo "Required Node files are present."
+
+      - name: Validate package scripts
         run: |
           set -euo pipefail
 
-          RELEASE_TAG="$(gh release list \
-            --repo "${REPO}" \
-            --limit 50 \
-            --json tagName,createdAt \
-            --jq "sort_by(.createdAt) | reverse | .[] | select(.tagName | startswith(\"${RELEASE_PREFIX}\")) | .tagName" \
-            | head -n 1)"
-
-          if [ -z "${RELEASE_TAG}" ]; then
-            echo "ERROR: No release found with prefix ${RELEASE_PREFIX}"
+          if ! grep -q '"build"' apps/node/package.json; then
+            echo "ERROR: package.json does not contain build script."
             exit 1
           fi
 
-          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
-          echo "Selected release: ${RELEASE_TAG}"
+          if ! grep -q '"build:web"' apps/node/package.json; then
+            echo "ERROR: package.json does not contain build:web script."
+            echo "Expected:"
+            echo '"build:web": "node scripts/build-web.js"'
+            exit 1
+          fi
 
-      - name: Download release artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+          if ! grep -q '"test"' apps/node/package.json; then
+            echo "ERROR: package.json does not contain test script."
+            exit 1
+          fi
 
-          mkdir -p release-assets
+          if ! grep -q '"lint"' apps/node/package.json; then
+            echo "ERROR: package.json does not contain lint script."
+            exit 1
+          fi
 
-          gh release download "${RELEASE_TAG}" \
-            --repo "${REPO}" \
-            --pattern "node-web-*.zip" \
-            --dir release-assets/
+          echo "Required package scripts are present."
 
-          gh release download "${RELEASE_TAG}" \
-            --repo "${REPO}" \
-            --pattern "SHA256SUMS.txt" \
-            --dir release-assets/
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - validate
+    timeout-minutes: 10
 
-          ls -lh release-assets/
-
-      - name: Verify checksum
-        run: |
-          set -euo pipefail
-
-          cd release-assets
-
-          NODE_WEB_ZIP="$(ls node-web-*.zip | head -n 1)"
-
-          grep " ${NODE_WEB_ZIP}$" SHA256SUMS.txt > SHA256SUMS-node-web.txt
-
-          cat SHA256SUMS-node-web.txt
-          sha256sum -c SHA256SUMS-node-web.txt
-
-      - name: Extract artifact
-        run: |
-          set -euo pipefail
-
-          mkdir -p site
-
-          NODE_WEB_ZIP="$(ls release-assets/node-web-*.zip | head -n 1)"
-          unzip -q "${NODE_WEB_ZIP}" -d site/
-
-          test -f site/index.html
-          test -f site/error.html
-          test -f site/styles.css
-          test -f site/health.json
-          test -f site/version.json
-          test -f site/deployment-info.json
-
-          find site -maxdepth 2 -type f -print | sort
-
-      - name: Update deployment metadata
-        env:
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
-        run: |
-          set -euo pipefail
-
-          DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-          cat > site/deployment-info.json <<EOF
-          {
-            "app": "shipfast-node",
-            "environment": "dev",
-            "release_tag": "${RELEASE_TAG}",
-            "deployed_by": "github-actions",
-            "deployed_at": "${DEPLOYED_AT}",
-            "deployment_target": "private-amazon-s3-bucket",
-            "s3_bucket": "${NODE_S3_BUCKET}",
-            "s3_prefix": "${NODE_S3_PREFIX}",
-            "external_access": "disabled"
-          }
-          EOF
-
-          cat > site/health.json <<EOF
-          {
-            "app": "shipfast-node",
-            "environment": "dev",
-            "status": "ok",
-            "release_tag": "${RELEASE_TAG}",
-            "deployment_target": "private-amazon-s3-bucket",
-            "external_access": "disabled"
-          }
-          EOF
-
-          cat > site/version.json <<EOF
-          {
-            "app": "shipfast-node",
-            "environment": "dev",
-            "release_tag": "${RELEASE_TAG}",
-            "deployed_by": "github-actions",
-            "deployed_at": "${DEPLOYED_AT}"
-          }
-          EOF
-
-          cat site/deployment-info.json
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
 
-      - name: Confirm AWS identity
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm ci
+
+      - name: Run lint
+        working-directory: apps/node
+        run: npm run lint
+
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm ci
+
+      - name: Run unit tests
+        working-directory: apps/node
+        run: npx jest __tests__/utils.test.js --coverage
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - validate
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm ci
+
+      - name: Run integration tests
+        working-directory: apps/node
+        run: npx jest __tests__/pipeline.test.js --coverage
+
+  sonar:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - unit-test
+      - integration-test
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm ci
+
+      - name: Generate coverage for SonarCloud
+        working-directory: apps/node
+        run: npm test
+
+      - name: Verify coverage report
+        working-directory: apps/node
         run: |
           set -euo pipefail
-          aws sts get-caller-identity
 
-      - name: Upload files to private S3
+          if [ ! -f coverage/lcov.info ]; then
+            echo "ERROR: coverage/lcov.info was not generated."
+            exit 1
+          fi
+
+          ls -lh coverage/lcov.info
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
         env:
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: apps/node
+
+  build:
+    name: Build Artifacts
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - lint
+      - unit-test
+      - integration-test
+      - sonar
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/node/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/node
+        run: npm ci
+
+      - name: Build npm package artifact
+        working-directory: apps/node
         run: |
           set -euo pipefail
 
-          aws s3 sync site/ "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" \
-            --delete \
-            --cache-control "no-cache"
+          npm run build
 
-          aws s3 ls "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/" --recursive
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: Node .tgz artifact was not generated."
+            exit 1
+          fi
 
-      - name: Validate S3 deployment
+          echo "Node package artifact:"
+          ls -lh dist/*.tgz
+
+      - name: Build static web artifact
+        working-directory: apps/node
         env:
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
 
-          for object in index.html error.html styles.css health.json version.json deployment-info.json; do
-            aws s3api head-object \
-              --bucket "${NODE_S3_BUCKET}" \
-              --key "${NODE_S3_PREFIX}/${object}" >/dev/null
+          npm run build:web
 
-            echo "Validated: s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/${object}"
+          required_files=(
+            "dist/web/index.html"
+            "dist/web/error.html"
+            "dist/web/styles.css"
+            "dist/web/health.json"
+            "dist/web/version.json"
+            "dist/web/deployment-info.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "ERROR: Missing static web file: ${file}"
+              exit 1
+            fi
           done
 
-          echo "health.json:"
-          aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/health.json" -
+          WEB_ZIP_NAME="node-web-${VERSION}.zip"
 
-          echo "version.json:"
-          aws s3 cp "s3://${NODE_S3_BUCKET}/${NODE_S3_PREFIX}/version.json" -
+          cd dist/web
+          zip -r "../${WEB_ZIP_NAME}" .
+          cd ..
 
-      - name: Write deployment summary
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          NODE_S3_BUCKET: ${{ vars.NODE_S3_BUCKET }}
-          NODE_S3_PREFIX: ${{ vars.NODE_S3_PREFIX }}
+          echo "Static web artifact:"
+          ls -lh "${WEB_ZIP_NAME}"
+
+      - name: Generate checksum
+        working-directory: apps/node
+        run: |
+          set -euo pipefail
+
+          cd dist
+          sha256sum *.tgz node-web-*.zip > SHA256SUMS.txt
+
+          echo "Generated checksum:"
+          cat SHA256SUMS.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}
+          path: |
+            apps/node/dist/*.tgz
+            apps/node/dist/node-web-*.zip
+            apps/node/dist/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Write build summary
         run: |
           {
-            echo "## Node CD Deployment Summary"
+            echo "## Node CI Build Summary"
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Environment | dev |"
-            echo "| Release tag | ${RELEASE_TAG} |"
-            echo "| Artifact | node-web-*.zip |"
-            echo "| AWS region | ${AWS_REGION} |"
-            echo "| S3 bucket | ${NODE_S3_BUCKET} |"
-            echo "| S3 prefix | ${NODE_S3_PREFIX} |"
-            echo "| External access | Disabled |"
+            echo "| Environment | ${{ needs.metadata.outputs.environment_name }} |"
+            echo "| Version | ${{ needs.metadata.outputs.version }} |"
+            echo "| Release tag reserved | ${{ needs.metadata.outputs.release_tag }} |"
+            echo "| PR base branch | ${{ needs.metadata.outputs.pr_base_branch }} |"
+            echo "| PR head SHA | ${{ needs.metadata.outputs.pr_head_sha }} |"
+            echo "| Package artifact | .tgz |"
+            echo "| Static web artifact | node-web-*.zip |"
+            echo "| Checksum file | SHA256SUMS.txt |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trivy:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - build
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout PR source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.pr_head_sha }}
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}
+          path: apps/node/dist/
+
+      - name: Show scan inputs
+        run: |
+          set -euo pipefail
+
+          echo "Node dependency files:"
+          ls -lh apps/node/package.json
+          ls -lh apps/node/package-lock.json
+
+          echo "Build artifacts:"
+          ls -lh apps/node/dist/
+
+      - name: Run Trivy scan on Node dependencies
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: apps/node
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+
+      - name: Write security summary
+        run: |
+          {
+            echo "## Node CI Security Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Scan target | apps/node |"
+            echo "| Scanner | Trivy filesystem vulnerability scan |"
+            echo "| Severity gate | HIGH,CRITICAL |"
+            echo "| Policy | Build is blocked if HIGH or CRITICAL vulnerabilities are found |"
+            echo "| Result | Passed if this job is successful |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - trivy
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}
+          path: dist/
+
+      - name: Validate release files
+        run: |
+          set -euo pipefail
+
+          echo "Release files:"
+          ls -lh dist/
+
+          if ! ls dist/*.tgz >/dev/null 2>&1; then
+            echo "ERROR: .tgz artifact missing."
+            exit 1
+          fi
+
+          if ! ls dist/node-web-*.zip >/dev/null 2>&1; then
+            echo "ERROR: node-web-*.zip artifact missing."
+            exit 1
+          fi
+
+          if [ ! -f dist/SHA256SUMS.txt ]; then
+            echo "ERROR: SHA256SUMS.txt missing."
+            exit 1
+          fi
+
+      - name: Publish artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          ENVIRONMENT_NAME: ${{ needs.metadata.outputs.environment_name }}
+          PR_BASE_BRANCH: ${{ needs.metadata.outputs.pr_base_branch }}
+          PR_HEAD_SHA: ${{ needs.metadata.outputs.pr_head_sha }}
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local max_attempts="$1"
+            local delay="$2"
+            shift 2
+
+            local attempt=1
+            until "$@"; do
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                echo "ERROR: Command failed after ${attempt} attempts: $*"
+                return 1
+              fi
+
+              echo "Attempt ${attempt} failed. Retrying in ${delay} seconds..."
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          if retry 3 2 gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release exists. Uploading assets with clobber."
+
+            retry 3 2 gh release upload "${RELEASE_TAG}" \
+              dist/*.tgz \
+              dist/node-web-*.zip \
+              dist/SHA256SUMS.txt \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            echo "Creating release."
+
+            retry 3 2 gh release create "${RELEASE_TAG}" \
+              dist/*.tgz \
+              dist/node-web-*.zip \
+              dist/SHA256SUMS.txt \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Node Build ${VERSION}" \
+              --notes "Node CI build artifact for ${ENVIRONMENT_NAME}. PR base branch: ${PR_BASE_BRANCH}. PR head SHA: ${PR_HEAD_SHA}."
+          fi
+
+      - name: Write release summary
+        run: |
+          {
+            echo "## Node CI Release Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | ${{ needs.metadata.outputs.environment_name }} |"
+            echo "| Version | ${{ needs.metadata.outputs.version }} |"
+            echo "| Release tag | ${{ needs.metadata.outputs.release_tag }} |"
+            echo "| PR base branch | ${{ needs.metadata.outputs.pr_base_branch }} |"
+            echo "| PR head SHA | ${{ needs.metadata.outputs.pr_head_sha }} |"
+            echo "| Package artifact | .tgz |"
+            echo "| Static web artifact | node-web-*.zip |"
+            echo "| Checksum file | SHA256SUMS.txt |"
           } >> "$GITHUB_STEP_SUMMARY"
