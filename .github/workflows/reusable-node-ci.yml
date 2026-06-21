@@ -24,7 +24,7 @@ on:
         type: string
 
       source_sha:
-        description: "Source commit SHA used for artifact and release versioning"
+        description: "Source commit SHA used for artifact versioning"
         required: true
         type: string
 
@@ -208,6 +208,12 @@ jobs:
         working-directory: ${{ inputs.app_path }}
         run: |
           set -euo pipefail
+
+          if [ ! -f coverage/lcov.info ]; then
+            echo "ERROR: coverage/lcov.info was not generated."
+            exit 1
+          fi
+
           ls -lh coverage/lcov.info
 
       - name: Run SonarQube scan
@@ -347,6 +353,23 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: Write build summary
+        run: |
+          {
+            echo "## Reusable Node CI Build Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | ${ENVIRONMENT_NAME} |"
+            echo "| Version | ${VERSION} |"
+            echo "| Release tag reserved | ${RELEASE_TAG} |"
+            echo "| Source SHA | ${SOURCE_SHA} |"
+            echo "| Package artifact | .tgz |"
+            echo "| Static web artifact | node-web-*.zip |"
+            echo "| Checksum file | SHA256SUMS.txt |"
+            echo "| Reusable workflow | reusable-node-ci.yml |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   trivy:
     name: Trivy Scan
     runs-on: ubuntu-latest
@@ -385,121 +408,15 @@ jobs:
           exit-code: 1
           ignore-unfixed: false
 
-  release:
-    name: Publish GitHub Release
-    runs-on: ubuntu-latest
-    needs: trivy
-    timeout-minutes: 10
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Prepare release tag
-        run: |
-          set -euo pipefail
-
-          SOURCE_SHA="${{ inputs.source_sha }}"
-          TARGET_ENVIRONMENT="${{ inputs.target_environment }}"
-          SHORT_SHA="${SOURCE_SHA:0:7}"
-
-          case "${TARGET_ENVIRONMENT}" in
-            dev)
-              ENVIRONMENT_NAME="dev"
-              ;;
-            stage)
-              ENVIRONMENT_NAME="stage"
-              ;;
-            prod)
-              ENVIRONMENT_NAME="prod"
-              ;;
-            *)
-              echo "ERROR: Unsupported target environment: ${TARGET_ENVIRONMENT}"
-              exit 1
-              ;;
-          esac
-
-          VERSION="${{ inputs.base_version }}-${ENVIRONMENT_NAME}-${SHORT_SHA}"
-          RELEASE_TAG="node-${VERSION}"
-
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
-          echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}" >> "$GITHUB_ENV"
-          echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
-          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
-
-          echo "Environment: ${ENVIRONMENT_NAME}"
-          echo "Version: ${VERSION}"
-          echo "Release tag: ${RELEASE_TAG}"
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: node-dist-${{ inputs.source_sha }}
-          path: dist/
-
-      - name: Validate release files
-        run: |
-          set -euo pipefail
-
-          echo "Release files:"
-          ls -lh dist/
-
-          if ! ls dist/*.tgz >/dev/null 2>&1; then
-            echo "ERROR: .tgz artifact missing."
-            exit 1
-          fi
-
-          if ! ls dist/node-web-*.zip >/dev/null 2>&1; then
-            echo "ERROR: node-web-*.zip artifact missing."
-            exit 1
-          fi
-
-          if [ ! -f dist/SHA256SUMS.txt ]; then
-            echo "ERROR: SHA256SUMS.txt missing."
-            exit 1
-          fi
-
-      - name: Publish artifacts to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release exists. Uploading assets with clobber."
-
-            gh release upload "${RELEASE_TAG}" \
-              dist/*.tgz \
-              dist/node-web-*.zip \
-              dist/SHA256SUMS.txt \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber
-          else
-            echo "Creating release."
-
-            gh release create "${RELEASE_TAG}" \
-              dist/*.tgz \
-              dist/node-web-*.zip \
-              dist/SHA256SUMS.txt \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "Node Build ${VERSION}" \
-              --notes "Reusable Node CI build artifact for ${ENVIRONMENT_NAME}. Source SHA: ${SOURCE_SHA}."
-          fi
-
-      - name: Write release summary
+      - name: Write Trivy summary
         run: |
           {
-            echo "## Reusable Node CI Release Summary"
+            echo "## Reusable Node CI Security Summary"
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Environment | ${ENVIRONMENT_NAME} |"
-            echo "| Version | ${VERSION} |"
-            echo "| Release tag | ${RELEASE_TAG} |"
-            echo "| Source SHA | ${SOURCE_SHA} |"
-            echo "| Package artifact | .tgz |"
-            echo "| Static web artifact | node-web-*.zip |"
-            echo "| Checksum file | SHA256SUMS.txt |"
-            echo "| Reusable workflow | reusable-node-ci.yml |"
+            echo "| Scan target | ${{ inputs.app_path }} |"
+            echo "| Scanner | Trivy filesystem vulnerability scan |"
+            echo "| Severity gate | HIGH,CRITICAL |"
+            echo "| Result | Passed if this job is successful |"
           } >> "$GITHUB_STEP_SUMMARY"
